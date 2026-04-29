@@ -1,9 +1,9 @@
 import os
-from reactor_vessel import create_reactor_vessel
-from ihx import create_ihx
+from component_premade_reactor_vessel import create_reactor_vessel
+from component_premade_ihx import create_ihx
 from utils import export_step
-from dagmc_convert import convert_to_dagmc
-from openmc_export import write_xmls
+from zzz_dagmc_convert import convert_to_dagmc
+from zzz_openmc_export import write_xmls
 
 OUTPUT_DIR = "output/esfr_smart"
 os.makedirs(OUTPUT_DIR, exist_ok=True)

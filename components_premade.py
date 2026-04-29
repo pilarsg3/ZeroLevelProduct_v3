@@ -39,16 +39,36 @@ Usage (identical style to all other build_solid primitives)
 ...     "z_bottom":   5.5,
 ...     "hole_groups": [...],
 ... }
->>> assembly = assemble_objects([RPV, TOP_PLATE, ...])
+>>> CORE = {
+...     "operation":             "primitive",
+...     "obj_id":                "core",
+...     "obj_type":              "reactor_core",
+...     "barrel_inner_radius":   1.65,
+...     "barrel_wall_t":         0.05,
+...     "barrel_height":         2.60,
+...     "barrel_z_bottom":       0.0,
+...     "r_inner_core":          0.86,
+...     "r_outer_core":          1.28,
+...     "r_radial_blanket":      1.54,
+...     "lower_plenum_h":        0.50,
+...     "axial_blanket_bottom_h": 0.30,
+...     "active_h":              1.00,
+...     "axial_blanket_top_h":   0.30,
+...     "upper_plenum_h":        0.50,
+... }
+>>> # NOTE: for OpenMC export, call create_reactor_core() directly to obtain
+>>> # the per-zone dict and assign individual material tags.
+>>> assembly = assemble_objects([RPV, TOP_PLATE, CORE])
 """
 
 from __future__ import annotations
 from typing import Any, cast
 import cadquery as cq
 
-from reactor_vessel import create_reactor_vessel
-from top_plate      import create_top_plate
-from ihx import create_ihx
+from component_premade_reactor_vessel import create_reactor_vessel
+from component_premade_top_plate      import create_top_plate
+from component_premade_ihx            import create_ihx
+from component_premade_reactor_core   import create_reactor_core
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +118,33 @@ def _build_ihx(obj: dict[str, Any]) -> cq.Workplane:
     return result.clean()
 
 
+def _build_reactor_core(obj: dict[str, Any]) -> cq.Workplane:
+    """
+    Merge all neutronic zones into a single solid for CAD visualization.
+
+    For OpenMC export, call create_reactor_core() directly instead —
+    the per-zone dict gives you individual material handles.
+    """
+    _CORE_KEYS = (
+        "barrel_inner_radius",
+        "barrel_wall_t",
+        "barrel_height",
+        "barrel_z_bottom",
+        "r_inner_core",
+        "r_outer_core",
+        "r_radial_blanket",
+        "lower_plenum_h",
+        "axial_blanket_bottom_h",
+        "active_h",
+        "axial_blanket_top_h",
+        "upper_plenum_h",
+    )
+    parts = create_reactor_core(**{k: v for k, v in obj.items() if k in _CORE_KEYS})
+    solids = list(parts.values())
+    result = solids[0]
+    for solid in solids[1:]:
+        result = result.union(solid)
+    return result.clean()
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +154,8 @@ def _build_ihx(obj: dict[str, Any]) -> cq.Workplane:
 PREMADE_BUILDERS: dict[str, Any] = {
     "reactor_vessel":    _build_reactor_vessel,
     "reactor_top_plate": _build_reactor_top_plate,
-    "ihx":               _build_ihx, 
+    "ihx":               _build_ihx,
+    "reactor_core":      _build_reactor_core,
 }
 
 

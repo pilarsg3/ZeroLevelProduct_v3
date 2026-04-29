@@ -6,7 +6,7 @@ from typing import Any
 import cadquery as cq
 
 from utils import extrude_profile, revolve_profile
-from top_plate import create_top_plate
+from component_premade_top_plate import create_top_plate
 
 
 # ---------------------------------------------------------------------------

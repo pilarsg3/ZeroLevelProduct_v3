@@ -2,7 +2,7 @@ import cadquery as cq
 from ocp_vscode import show
 import time
 
-from top_plate import create_top_plate
+from component_premade_top_plate import create_top_plate
 
 # ── 1. Plain disk ──────────────────────────────────────────────────────────────
 plate_1 = create_top_plate(

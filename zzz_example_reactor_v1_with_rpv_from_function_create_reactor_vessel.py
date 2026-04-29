@@ -1,5 +1,5 @@
 from assemble import assemble_objects
-from reactor_vessel import create_reactor_vessel
+from component_premade_reactor_vessel import create_reactor_vessel
 from ocp_vscode import show
 import math
 import cadquery as cq

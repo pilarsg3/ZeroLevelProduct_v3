@@ -34,7 +34,7 @@ from typing import Any
 
 import cadquery as cq
 
-from top_plate import create_top_plate
+from component_premade_top_plate import create_top_plate
 
 
 # ---------------------------------------------------------------------------

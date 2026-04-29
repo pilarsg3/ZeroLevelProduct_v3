@@ -20,7 +20,7 @@ z = 11.794   primary elbow connects here (top of neck)
 
 import cadquery as cq
 from ocp_vscode import show
-from ihx import create_ihx
+from component_premade_ihx import create_ihx
 
 # Inner funnel profile (r, z) — tapered from narrow at top to wide at bottom
 # Based on drawing: upper inner_d≈400mm, widens to ≈800mm, then bundle section

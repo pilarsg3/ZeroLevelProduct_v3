@@ -1,8 +1,8 @@
 import os
 import cadquery as cq
 from ocp_vscode import show
-from reactor_vessel import create_reactor_vessel
-from ihx import create_ihx
+from component_premade_reactor_vessel import create_reactor_vessel
+from component_premade_ihx import create_ihx
 from utils import export_step, fuse_to_single_solid
 
 OUTPUT_DIR = "output/esfr_smart"

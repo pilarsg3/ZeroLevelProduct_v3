@@ -3,7 +3,7 @@ from ocp_vscode import show
 import math
 import cadquery as cq
 
-from top_plate import create_top_plate
+from component_premade_top_plate import create_top_plate
 
 # ================================================================================================
 # EXAMPLE: SMR primary loop - vessel, core, steam generators (polar coordinates)

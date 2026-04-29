@@ -1,7 +1,7 @@
 import os
 import glob
-from dagmc_convert import convert_to_dagmc
-from openmc_export import write_xmls
+from zzz_dagmc_convert import convert_to_dagmc
+from zzz_openmc_export import write_xmls
 
 STEP_DIR   = "output/esfr_smart"
 OUTPUT_DIR = "output/esfr_smart"

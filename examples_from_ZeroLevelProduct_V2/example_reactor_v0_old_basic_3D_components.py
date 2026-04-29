@@ -4,7 +4,7 @@ import math
 import cadquery as cq
 from typing import cast
 
-from top_plate import create_top_plate
+from component_premade_top_plate import create_top_plate
 from utils import insert_into
 
 # ================================================================================================

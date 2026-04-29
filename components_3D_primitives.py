@@ -285,7 +285,7 @@ def _build_cylinder_closed_bottom(obj: Dict[str, Any], index: int) -> cq.Workpla
         Legacy alias for bottom_head_params={'plate_t': value} when head type is 'flat'.
     """
     # Lazy import avoids making reactor_vessel a hard top-level dependency
-    from reactor_vessel import _build_outer_head
+    from component_premade_reactor_vessel import _build_outer_head
 
     obj_id = obj.get("obj_id", f"obj_{index}")
     h  = obj["height"]

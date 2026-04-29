@@ -187,12 +187,13 @@ RULES
 4. obj_type must be one of:
      cylinder | pipe | box | sphere |
      reactor_vessel | reactor_top_plate | ihx
-5. For reactor_vessel: populate inner_d, wall_t, straight_h, bottom_head_type.
+5. For PREMADE types (reactor_vessel, reactor_top_plate, ihx): ALWAYS set operation="primitive".
+6. For reactor_vessel: populate inner_d, wall_t, straight_h, bottom_head_type.
    Use outer_d only if inner_d is not labelled.
-6. For hole_groups in reactor_top_plate: populate as many fields as visible.
-7. If a dimension label is ambiguous, use your best engineering judgement and
+7. For hole_groups in reactor_top_plate: populate as many fields as visible.
+8. If a dimension label is ambiguous, use your best engineering judgement and
    note the ambiguity in the top-level "description" field.
-8. Generate a short snake_case obj_id for each component.
+9. Generate a short snake_case obj_id for each component.
 
 JSON SCHEMA (all fields except obj_id and operation are nullable)
 -----------------------------------------------------------------
@@ -350,7 +351,7 @@ def _rebuild_component(c: dict[str, Any], s: float) -> dict[str, Any]:
 
     _FIELDS_BY_TYPE: dict[str, set] = {
         "reactor_vessel": {
-            "inner_d", "wall_t", "straight_h", "height",
+            "inner_d", "outer_d", "wall_t", "straight_h", "height",
             "bottom_head_type", "bottom_head_params",
             "top_head_type", "top_head_params",
         },
@@ -697,6 +698,454 @@ def extract_specs_from_drawings(
 
 
 # ---------------------------------------------------------------------------
+# Text description → specs
+# ---------------------------------------------------------------------------
+
+_TEXT_SYSTEM_PROMPT = """\
+You are a nuclear engineering CAD assistant.
+Your task is to interpret a text description of a reactor or component and extract
+3D geometry into a single JSON object that conforms exactly to the schema below.
+
+RULES
+-----
+1. Output ONLY valid JSON — no prose, no markdown fences, no comments.
+2. Use null for values not mentioned in the description.
+3. Infer the unit system from context ("mm", "cm", or "m") and record it in "units".
+   If ambiguous, default to "m". Do NOT convert units.
+4. obj_type must be one of:
+     cylinder | pipe | box | sphere |
+     reactor_vessel | reactor_top_plate | ihx
+5. For PREMADE types (reactor_vessel, reactor_top_plate, ihx): ALWAYS set operation="primitive".
+6. For reactor_vessel: populate inner_d, wall_t, straight_h, bottom_head_type.
+   Use outer_d only if inner_d cannot be inferred.
+7. For hole_groups in reactor_top_plate: populate as many fields as mentioned.
+8. If a value is ambiguous, use your best engineering judgement and note the
+   ambiguity in the top-level "description" field.
+9. Generate a short snake_case obj_id for each component.
+
+JSON SCHEMA (all fields except obj_id and operation are nullable)
+-----------------------------------------------------------------
+{schema}
+""".format(schema=json.dumps(DRAWING_EXTRACTION_SCHEMA, indent=2))
+
+
+def extract_specs_from_text(
+    description: str,
+    *,
+    api_key:     str | None = None,
+    model:       str = "claude-sonnet-4-6",
+    max_tokens:  int = 4096,
+    save_raw_to: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Text description → assemble_objects() spec list.
+
+    Sends a natural-language description of a reactor/component to Claude
+    and returns a clean spec list — no image required.
+
+    Parameters
+    ----------
+    description : str
+        Free-form text describing the reactor geometry.
+        Example: "A reactor vessel with inner diameter 4.72 m, wall thickness
+        40 mm, straight section 5.5 m, ellipsoidal bottom head with depth 1 m.
+        A flat top plate of outer diameter 4.8 m and thickness 100 mm sits on
+        top at z = 5.5 m."
+    api_key : str, optional
+        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+    model : str
+        Default: "claude-sonnet-4-6".
+    max_tokens : int
+        Default: 4096.
+    save_raw_to : str | Path, optional
+        If given, saves the raw JSON for inspection / later reuse.
+
+    Returns
+    -------
+    list[dict]
+        Spec list ready for assemble_objects() or ask_for_missing_params().
+
+    Example
+    -------
+    >>> from claude_pipeline import extract_specs_from_text
+    >>> specs = extract_specs_from_text(
+    ...     "Reactor vessel: inner diameter 4.72 m, wall 40 mm, height 5.5 m."
+    ... )
+    >>> assembly = assemble_objects(specs)
+    """
+    if not description or not description.strip():
+        raise ValueError("description must be a non-empty string.")
+
+    client = _get_client(api_key)
+
+    response = client.messages.create(
+        model      = model,
+        max_tokens = max_tokens,
+        system     = _TEXT_SYSTEM_PROMPT,
+        messages   = [{
+            "role":    "user",
+            "content": description.strip(),
+        }],
+    )
+
+    raw_text = "".join(b.text for b in response.content if b.type == "text")
+    raw = _parse_response(raw_text)
+
+    if save_raw_to is not None:
+        _save_raw(raw, save_raw_to)
+
+    return postprocess(raw)
+
+
+def build_from_description(
+    description: str,
+    output_dir:  str  = "output",
+    visualize:   bool = True,
+    interactive: bool = False,
+    confirm_cost: bool = False,
+    save_raw_to: str | Path | None = None,
+    *,
+    api_key: str | None = None,
+    model:   str = "claude-sonnet-4-6",
+):
+    """Text description → 3D CAD. Thin wrapper around build_from_user_input()."""
+    return build_from_user_input(
+        description  = description,
+        output_dir   = output_dir,
+        visualize    = visualize,
+        interactive  = interactive,
+        confirm_cost = confirm_cost,
+        save_raw_to  = save_raw_to,
+        api_key      = api_key,
+        model        = model,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Unified pipeline internals
+# ---------------------------------------------------------------------------
+
+# Approximate pricing per million tokens (update if Anthropic changes rates)
+# Source: https://www.anthropic.com/pricing  (as of 2025-04)
+_PRICING_PER_MTOK: dict[str, dict[str, float]] = {
+    "claude-sonnet-4-6":  {"input": 3.0,  "output": 15.0},
+    "claude-opus-4-5":    {"input": 15.0, "output": 75.0},
+    "claude-haiku-4-5":   {"input": 0.8,  "output": 4.0},
+}
+_DEFAULT_PRICING = {"input": 3.0, "output": 15.0}  # fallback
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Return estimated cost in USD."""
+    p = _PRICING_PER_MTOK.get(model, _DEFAULT_PRICING)
+    return (input_tokens * p["input"] + output_tokens * p["output"]) / 1_000_000
+
+
+def _count_and_confirm(
+    client:   Any,
+    model:    str,
+    system:   str,
+    content:  list[dict[str, Any]],
+    label:    str = "this call",
+    expected_output_tokens: int = 1500,
+) -> bool:
+    """
+    Count input tokens, display estimated cost, and ask user to confirm.
+
+    Returns True to proceed, False to abort.
+    """
+    try:
+        count_response = client.messages.count_tokens(
+            model    = model,
+            system   = system,
+            messages = [{"role": "user", "content": content}],
+        )
+        input_tokens = count_response.input_tokens
+    except Exception as e:
+        print(f"  (Token count unavailable: {e})")
+        choice = input("  Proceed anyway? [y/N]: ").strip().lower()
+        return choice == "y"
+
+    est_cost = _estimate_cost(model, input_tokens, expected_output_tokens)
+
+    print(f"\n{'─'*50}")
+    print(f"  Token estimate for {label}:")
+    print(f"    Input tokens  : {input_tokens:,}")
+    print(f"    Output tokens : ~{expected_output_tokens:,}  (estimate)")
+    print(f"    Estimated cost: ~${est_cost:.4f} USD")
+    print(f"    Model         : {model}")
+    print(f"  (Prices approx. — check anthropic.com/pricing for current rates)")
+    print(f"{'─'*50}")
+
+    choice = input("  Proceed? [Y/n]: ").strip().lower()
+    return choice in ("", "y", "yes")
+
+
+def _extract_specs(
+    description:  str | None,
+    drawings:     list[Path],
+    api_key:      str | None,
+    model:        str,
+    save_raw_to:  str | Path | None,
+    confirm_cost: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Smart dispatcher: extract specs from text, drawings, or both combined.
+
+    - text only          → single Claude text call
+    - drawings only (1)  → single-image vision call
+    - drawings only (2+) → multi-image vision call
+    - text + drawings    → single call with images AND description as extra context
+
+    If confirm_cost=True, count tokens first and ask the user to confirm before
+    making the real API call.
+    """
+    has_text     = bool(description and description.strip())
+    has_drawings = bool(drawings)
+
+    if has_text and has_drawings:
+        client = _get_client(api_key)
+        content: list[dict[str, Any]] = []
+        if len(drawings) == 1:
+            content.append({"type": "text", "text": f"Drawing ({drawings[0].name}):"})
+            content.append(_image_content_block(drawings[0]))
+        else:
+            for i, dp in enumerate(drawings):
+                content.append({"type": "text", "text": f"Drawing {i+1} ({dp.name}):"})
+                content.append(_image_content_block(dp))
+        content.append({"type": "text", "text":
+            f"Additional description from the user:\n{(description or '').strip()}\n\n"
+            + _MULTI_USER_PROMPT
+        })
+        if confirm_cost:
+            if not _count_and_confirm(client, model, _SYSTEM_PROMPT, content,
+                                      label="text + drawings extraction"):
+                raise SystemExit("Aborted by user.")
+        response = client.messages.create(
+            model      = model,
+            max_tokens = 8192,
+            system     = _SYSTEM_PROMPT,
+            messages   = [{"role": "user", "content": content}],
+        )
+        raw_text = "".join(b.text for b in response.content if b.type == "text")
+        raw = _parse_response(raw_text)
+        if save_raw_to is not None:
+            _save_raw(raw, save_raw_to)
+        return postprocess(raw)
+
+    elif has_text:
+        if confirm_cost:
+            client = _get_client(api_key)
+            content_text = [{"type": "text", "text": (description or "").strip()}]
+            if not _count_and_confirm(client, model, _TEXT_SYSTEM_PROMPT, content_text,
+                                      label="text extraction"):
+                raise SystemExit("Aborted by user.")
+        return extract_specs_from_text(
+            description,  # type: ignore[arg-type]
+            api_key=api_key, model=model, save_raw_to=save_raw_to,
+        )
+
+    elif has_drawings:
+        if confirm_cost:
+            client = _get_client(api_key)
+            content_imgs: list[dict[str, Any]] = []
+            for i, dp in enumerate(drawings):
+                if len(drawings) > 1:
+                    content_imgs.append({"type": "text", "text": f"Drawing {i+1} ({dp.name}):"})
+                content_imgs.append(_image_content_block(dp))
+            content_imgs.append({"type": "text", "text":
+                _USER_PROMPT if len(drawings) == 1 else _MULTI_USER_PROMPT
+            })
+            if not _count_and_confirm(client, model, _SYSTEM_PROMPT, content_imgs,
+                                      label="drawings extraction"):
+                raise SystemExit("Aborted by user.")
+        if len(drawings) == 1:
+            return extract_specs_from_drawing(
+                drawings[0], api_key=api_key, model=model, save_raw_to=save_raw_to,
+            )
+        else:
+            return extract_specs_from_drawings(
+                [str(d) for d in drawings],
+                api_key=api_key, model=model, save_raw_to=save_raw_to,
+            )
+
+    else:
+        raise ValueError("Provide at least one of: description, drawings, or input_dir.")
+
+
+def _run_pipeline(
+    specs:       list[dict[str, Any]],
+    output_dir:  str,
+    output_stem: str,
+    visualize:   bool,
+    interactive: bool,
+) -> tuple[Any, list[dict[str, Any]], Path]:
+    """Shared steps 2-5: interactive fill → build → export → visualize."""
+    from pathlib import Path
+    from assemble import assemble_objects
+    from utils import export_step
+    from ocp_vscode import show
+
+    if interactive:
+        print("\n🔧 Interactive mode: completing missing parameters...")
+        specs = ask_for_missing_params(specs)
+
+    print("\n🔨 Building 3D CAD assembly...")
+    try:
+        assembly = assemble_objects(specs)
+        print("✓ Assembly complete")
+    except Exception as e:
+        print(f"✗ Assembly failed: {e}")
+        raise
+
+    print("\n💾 Exporting to STEP...")
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    output_file = output_path / f"{output_stem}.step"
+    try:
+        export_step(assembly, str(output_file))  # type: ignore
+        print(f"✓ Exported: {output_file}")
+    except Exception as e:
+        print(f"✗ Export failed: {e}")
+        raise
+
+    if visualize:
+        print("\n🎨 Visualizing...")
+        show(assembly)  # type: ignore
+
+    print("\n✅ Done!")
+    return assembly, specs, output_file
+
+
+def build_from_user_input(
+    description:  str | None = None,
+    input_dir:    str | Path | None = None,
+    drawings:     list[str | Path] | None = None,
+    output_dir:   str  = "output",
+    visualize:    bool = True,
+    interactive:  bool = False,
+    confirm_cost: bool = False,
+    save_raw_to:  str | Path | None = None,
+    *,
+    api_key: str | None = None,
+    model:   str = "claude-sonnet-4-6",
+):
+    """
+    Universal entry point: text description, drawings, or both → 3D CAD assembly.
+
+    Any combination of inputs is accepted:
+
+    Text only::
+
+        build_from_user_input(
+            description="Reactor vessel: inner diameter 4.72 m, wall 40 mm ..."
+        )
+
+    Drawings only (auto-discover from folder)::
+
+        build_from_user_input(input_dir=Path(__file__).parent)
+
+    Explicit drawing list::
+
+        build_from_user_input(drawings=["rv.jpg", "top_plate.jpg"])
+
+    Text + drawings (Claude reconciles both)::
+
+        build_from_user_input(
+            description="Wall thickness is 40 mm.",
+            input_dir=Path(__file__).parent,
+        )
+
+    Parameters
+    ----------
+    description : str, optional
+        Free-form text describing reactor geometry.
+    input_dir : Path, optional
+        Folder to auto-discover .jpg/.png files from.
+    drawings : list[str|Path], optional
+        Explicit list of drawing file paths (overrides input_dir).
+    output_dir : str
+        Output folder for STEP file. Default: "output"
+    visualize : bool
+        Show in 3D viewer. Default: True
+    interactive : bool
+        Prompt for missing parameters via terminal. Default: False
+    confirm_cost : bool
+        Count tokens first, show estimated cost, and ask to proceed. Default: False
+    save_raw_to : str | Path, optional
+        Save raw Claude JSON for inspection / replay.
+    api_key : str, optional
+        Anthropic API key. Falls back to ANTHROPIC_API_KEY env var.
+    model : str
+        Claude model. Default: "claude-sonnet-4-6".
+
+    Returns
+    -------
+    assembly : cq.Assembly
+    specs    : list[dict]
+    output_file : Path
+    """
+    from pathlib import Path as _Path
+
+    # ── Resolve drawing paths ────────────────────────────────────────────
+    resolved_drawings: list[Path] = []
+    if drawings is not None:
+        for d in drawings:
+            p = _Path(d)
+            if not p.exists():
+                raise FileNotFoundError(f"Drawing not found: {p}")
+            resolved_drawings.append(p)
+    elif input_dir is not None:
+        base = _Path(input_dir)
+        resolved_drawings = sorted(base.glob("*.jpg")) + sorted(base.glob("*.png"))
+        if not resolved_drawings and not description:
+            raise FileNotFoundError(
+                f"No .jpg/.png drawings found in {base}\n"
+                "Pass a description= or add image files."
+            )
+    elif not description:
+        # Default: auto-discover from cwd
+        base = _Path.cwd()
+        resolved_drawings = sorted(base.glob("*.jpg")) + sorted(base.glob("*.png"))
+        if not resolved_drawings:
+            raise FileNotFoundError(
+                f"No drawings found in {base} and no description given.\n"
+                "Pass description=, input_dir=, or drawings=, or place image files in cwd."
+            )
+
+    if resolved_drawings:
+        print(f"✓ Found {len(resolved_drawings)} drawing(s):")
+        for i, d in enumerate(resolved_drawings, 1):
+            print(f"  {i}. {d.name}")
+    if description:
+        preview = description.strip().splitlines()[0][:80]
+        print(f"✓ Description: {preview}{'...' if len(description.strip()) > 80 else ''}")
+
+    # ── Extract ──────────────────────────────────────────────────────────
+    mode = ("text+drawings" if description and resolved_drawings
+            else "drawings" if resolved_drawings
+            else "text")
+    print(f"\n\U0001f4d0 Extracting geometry from {mode} via Claude...")
+    try:
+        specs = _extract_specs(description, resolved_drawings, api_key, model, save_raw_to,
+                               confirm_cost=confirm_cost)
+        print(f"✓ Extracted {len(specs)} component(s)")
+        for spec in specs:
+            print(f"  - {spec.get('obj_id')}: {spec.get('obj_type')}")
+    except Exception as e:
+        print(f"✗ Extraction failed: {e}")
+        raise
+
+    # ── Output filename stem ─────────────────────────────────────────────
+    if resolved_drawings:
+        stem = _Path(resolved_drawings[0]).parent.name or "assembly"
+    else:
+        stem = "description_assembly"
+
+    return _run_pipeline(specs, output_dir, stem, visualize, interactive)
+
+
+# ---------------------------------------------------------------------------
 # CLI — python claude_vision_pipeline.py drawing.png [raw_output.json]
 # ---------------------------------------------------------------------------
 
@@ -720,3 +1169,335 @@ if __name__ == "__main__":
     if save_to:
         print(f"\nTo reload:  from claude_vision_pipeline import specs_from_json")
         print(f"            specs = specs_from_json('{save_to}')")
+
+
+# ---------------------------------------------------------------------------
+# Interactive parameter completion helpers
+# ---------------------------------------------------------------------------
+
+def _ask_float(prompt: str, required: bool = True) -> float | None:
+    """Prompt user for a float. Returns None if skipped (only allowed when not required)."""
+    while True:
+        try:
+            user_input = input(f"  Enter {prompt}: ").strip()
+            if not user_input:
+                if required:
+                    print("    (required — cannot skip)")
+                    continue
+                else:
+                    print("    (skipped)")
+                    return None
+            return float(user_input)
+        except ValueError:
+            print("  ✗ Invalid — please enter a number.")
+
+
+def _ask_choice(prompt: str, options: list[str]) -> str:
+    """Prompt user to pick from a list of options."""
+    while True:
+        choice = input(f"  {prompt} ({'/'.join(options)}): ").strip()
+        if choice in options:
+            return choice
+        print(f"  ✗ Choose one of: {options}")
+
+
+def _resolve_radii(spec: dict, label: str = "") -> None:
+    """
+    Resolve pipe-like geometry: any two of {outer_radius, inner_radius, wall_thickness} → derive the third.
+    Modifies spec in place.
+    """
+    ro = spec.get("outer_radius")
+    ri = spec.get("inner_radius")
+    wt = spec.get("wall_thickness")
+
+    has_ro = ro is not None
+    has_ri = ri is not None
+    has_wt = wt is not None
+    n_known = sum([has_ro, has_ri, has_wt])
+
+    if n_known >= 2:
+        # Already sufficient — derive the missing one
+        if has_ro and has_ri:
+            if not has_wt:
+                spec["wall_thickness"] = ro - ri
+        elif has_ro and has_wt:
+            spec["inner_radius"] = ro - wt
+        elif has_ri and has_wt:
+            spec["outer_radius"] = ri + wt
+        return
+
+    # Need to ask user
+    print(f"\n  Radius specification for {label}:")
+    print("    [1]  outer_radius + wall_thickness  (inner derived)")
+    print("    [2]  inner_radius + wall_thickness  (outer derived)")
+    print("    [3]  outer_radius + inner_radius    (wall derived)")
+    choice = _ask_choice("Choose", ["1", "2", "3"])
+
+    if choice == "1":
+        if not has_ro:
+            spec["outer_radius"] = _ask_float("outer_radius")
+        if not has_wt:
+            spec["wall_thickness"] = _ask_float("wall_thickness")
+        spec["inner_radius"] = spec["outer_radius"] - spec["wall_thickness"]  # type: ignore[operator]
+        print(f"    ✓ Derived inner_radius = {spec['inner_radius']:.6g}")
+    elif choice == "2":
+        if not has_ri:
+            spec["inner_radius"] = _ask_float("inner_radius")
+        if not has_wt:
+            spec["wall_thickness"] = _ask_float("wall_thickness")
+        spec["outer_radius"] = spec["inner_radius"] + spec["wall_thickness"]  # type: ignore[operator]
+        print(f"    ✓ Derived outer_radius = {spec['outer_radius']:.6g}")
+    elif choice == "3":
+        if not has_ro:
+            spec["outer_radius"] = _ask_float("outer_radius")
+        if not has_ri:
+            spec["inner_radius"] = _ask_float("inner_radius")
+        spec["wall_thickness"] = spec["outer_radius"] - spec["inner_radius"]  # type: ignore[operator]
+        print(f"    ✓ Derived wall_thickness = {spec['wall_thickness']:.6g}")
+
+
+def _resolve_rv_diameter(spec: dict) -> None:
+    """
+    reactor_vessel: resolve inner_d + wall_t OR outer_d + wall_t → derive the other.
+    Modifies spec in place.
+    """
+    inner_d = spec.get("inner_d")
+    wall_t  = spec.get("wall_t")
+    outer_d = spec.get("outer_d")  # outer_d = inner_d + 2*wall_t
+
+    has_inner = inner_d is not None
+    has_wall  = wall_t  is not None
+    has_outer = outer_d is not None
+
+    if has_inner and has_wall:
+        return  # sufficient
+
+    if has_outer and has_wall:
+        spec["inner_d"] = outer_d - 2 * wall_t  # type: ignore[operator]
+        print(f"    ✓ Derived inner_d = {spec['inner_d']:.6g}")
+        return
+
+    if has_inner and has_outer:
+        spec["wall_t"] = (outer_d - inner_d) / 2  # type: ignore[operator]
+        print(f"    ✓ Derived wall_t = {spec['wall_t']:.6g}")
+        return
+
+    # Need to ask
+    print("\n  Diameter specification for reactor_vessel:")
+    print("    [1]  inner_d + wall_t   (outer derived: outer_d = inner_d + 2*wall_t)")
+    print("    [2]  outer_d + wall_t   (inner derived: inner_d = outer_d - 2*wall_t)")
+    print("    [3]  inner_d + outer_d  (wall derived:  wall_t  = (outer_d - inner_d) / 2)")
+    choice = _ask_choice("Choose", ["1", "2", "3"])
+
+    if choice == "1":
+        if not has_inner:
+            spec["inner_d"] = _ask_float("inner_d (Inner diameter)")
+        if not has_wall:
+            spec["wall_t"] = _ask_float("wall_t (Wall thickness)")
+    elif choice == "2":
+        if not has_outer:
+            spec["outer_d"] = _ask_float("outer_d (Outer diameter)")
+        if not has_wall:
+            spec["wall_t"] = _ask_float("wall_t (Wall thickness)")
+        spec["inner_d"] = spec["outer_d"] - 2 * spec["wall_t"]  # type: ignore[operator]
+        print(f"    ✓ Derived inner_d = {spec['inner_d']:.6g}")
+    elif choice == "3":
+        if not has_inner:
+            spec["inner_d"] = _ask_float("inner_d (Inner diameter)")
+        if not has_outer:
+            spec["outer_d"] = _ask_float("outer_d (Outer diameter)")
+        spec["wall_t"] = (spec["outer_d"] - spec["inner_d"]) / 2  # type: ignore[operator]
+        print(f"    ✓ Derived wall_t = {spec['wall_t']:.6g}")
+
+
+# ---------------------------------------------------------------------------
+# Main interactive completion function
+# ---------------------------------------------------------------------------
+
+def ask_for_missing_params(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Interactive: Ask user to fill in missing critical parameters.
+
+    Handles all component types and their logical input combinations:
+
+    Primitive types:
+      cylinder              : radius, height
+      sphere                : radius
+      box                   : length, width, height
+      pipe                  : height + any two of {outer_radius, inner_radius, wall_thickness}
+      cylinder_closed_bottom: height + any two of {outer_radius, inner_radius, wall_thickness}
+
+    Premade types (operation="primitive"):
+      reactor_vessel        : (inner_d OR outer_d) + wall_t + straight_h
+      reactor_top_plate     : outer_d, thickness, z_bottom
+      ihx                   : shell_od, shell_wall_t, shell_straight_h + optional fields
+
+    Parameters
+    ----------
+    specs : list[dict]
+        Component specifications from extraction (may have nulls)
+
+    Returns
+    -------
+    list[dict]
+        Updated specs with user-provided values
+
+    Example
+    -------
+    >>> specs = extract_specs_from_drawing("drawing.png")
+    >>> specs = ask_for_missing_params(specs)
+    >>> assembly = assemble_objects(specs)
+    """
+
+    updated_specs = []
+
+    for spec in specs:
+        obj_id   = spec.get("obj_id", "unknown")
+        obj_type = spec.get("obj_type")
+
+        print(f"\n{'='*60}")
+        print(f"Component : {obj_id}  (type: {obj_type})")
+        print(f"{'='*60}")
+
+        # ── cylinder ────────────────────────────────────────────────────
+        if obj_type == "cylinder":
+            if spec.get("radius") is None:
+                spec["radius"] = _ask_float("radius")
+            else:
+                print(f"✓ radius: {spec['radius']}")
+            if spec.get("height") is None:
+                spec["height"] = _ask_float("height")
+            else:
+                print(f"✓ height: {spec['height']}")
+
+        # ── sphere ───────────────────────────────────────────────────────
+        elif obj_type == "sphere":
+            if spec.get("radius") is None:
+                spec["radius"] = _ask_float("radius")
+            else:
+                print(f"✓ radius: {spec['radius']}")
+
+        # ── box ──────────────────────────────────────────────────────────
+        elif obj_type == "box":
+            for field in ("length", "width", "height"):
+                if spec.get(field) is None:
+                    spec[field] = _ask_float(field)
+                else:
+                    print(f"✓ {field}: {spec[field]}")
+
+        # ── pipe ─────────────────────────────────────────────────────────
+        elif obj_type == "pipe":
+            if spec.get("height") is None:
+                spec["height"] = _ask_float("height")
+            else:
+                print(f"✓ height: {spec['height']}")
+            _resolve_radii(spec, label=obj_id)
+
+        # ── cylinder_closed_bottom ────────────────────────────────────────
+        elif obj_type == "cylinder_closed_bottom":
+            if spec.get("height") is None:
+                spec["height"] = _ask_float("height")
+            else:
+                print(f"✓ height: {spec['height']}")
+            _resolve_radii(spec, label=obj_id)
+
+        # ── reactor_vessel ────────────────────────────────────────────────
+        elif obj_type == "reactor_vessel":
+            _resolve_rv_diameter(spec)
+            straight_h = spec.get("straight_h") or spec.get("height")
+            if straight_h is None:
+                straight_h = _ask_float("straight_h (Straight section height)")
+                spec["straight_h"] = straight_h
+            else:
+                print(f"✓ straight_h: {straight_h}")
+            # Optional head geometry — ask only if not set
+            if spec.get("bottom_head_type") is None:
+                print("\n  Bottom head type (optional — press Enter to skip):")
+                print("    Options: flat | hemispherical | ellipsoidal | torispherical")
+                val = input("  Enter bottom_head_type: ").strip()
+                if val in ("flat", "hemispherical", "ellipsoidal", "torispherical"):
+                    spec["bottom_head_type"] = val
+                    if val == "ellipsoidal":
+                        hd = _ask_float("bottom head_depth (ellipsoidal depth)")
+                        spec["bottom_head_params"] = {"head_depth": hd}
+                elif val:
+                    print("  ✗ Unrecognised type — skipped")
+            else:
+                print(f"✓ bottom_head_type: {spec['bottom_head_type']}")
+
+        # ── reactor_top_plate ─────────────────────────────────────────────
+        elif obj_type == "reactor_top_plate":
+            for field, prompt in (
+                ("outer_d",   "outer_d (Outer diameter)"),
+                ("thickness", "thickness (Plate thickness)"),
+                ("z_bottom",  "z_bottom (Z position of bottom face)"),
+            ):
+                if spec.get(field) is None:
+                    spec[field] = _ask_float(prompt)
+                else:
+                    print(f"✓ {field}: {spec[field]}")
+
+        # ── ihx ───────────────────────────────────────────────────────────
+        elif obj_type == "ihx":
+            # Required fields
+            for field, prompt in (
+                ("shell_od",         "shell_od (Shell outer diameter)"),
+                ("shell_wall_t",     "shell_wall_t (Shell wall thickness)"),
+                ("shell_straight_h", "shell_straight_h (Shell height)"),
+            ):
+                if spec.get(field) is None:
+                    spec[field] = _ask_float(prompt)
+                else:
+                    print(f"✓ {field}: {spec[field]}")
+
+            # Optional fields
+            optional_ihx = [
+                ("inner_od",                "inner_od (Inner cylinder outer diameter)"),
+                ("inner_wall_t",            "inner_wall_t (Inner cylinder wall thickness)"),
+                ("inner_h",                 "inner_h (Inner cylinder height)"),
+                ("bundle_od",               "bundle_od (Bundle outer diameter)"),
+                ("bundle_id",               "bundle_id (Bundle inner diameter)"),
+                ("bundle_h",                "bundle_h (Bundle height)"),
+                ("secondary_inlet_od",      "secondary_inlet_od"),
+                ("secondary_inlet_wall_t",  "secondary_inlet_wall_t"),
+                ("secondary_inlet_length",  "secondary_inlet_length"),
+                ("secondary_inlet_z",       "secondary_inlet_z"),
+                ("secondary_outlet_od",     "secondary_outlet_od"),
+                ("secondary_outlet_wall_t", "secondary_outlet_wall_t"),
+                ("secondary_outlet_length", "secondary_outlet_length"),
+                ("secondary_outlet_z",      "secondary_outlet_z"),
+            ]
+            for field, prompt in optional_ihx:
+                if spec.get(field) is None:
+                    val = _ask_float(prompt + " (optional — Enter to skip)", required=False)
+                    if val is not None:
+                        spec[field] = val
+                else:
+                    print(f"✓ {field}: {spec[field]}")
+
+        # ── unknown type ──────────────────────────────────────────────────
+        else:
+            print(f"  (no interactive checks defined for type '{obj_type}' — passed through)")
+
+        updated_specs.append(spec)
+
+    print(f"\n{'='*60}")
+    print("✅ Parameter completion done!\n")
+    return updated_specs
+
+
+def build_from_drawings(
+    input_dir    = None,
+    output_dir:  str  = "output",
+    visualize:   bool = True,
+    interactive: bool = False,
+    confirm_cost: bool = False,
+):
+    """Drawings in a folder → 3D CAD. Thin wrapper around build_from_user_input()."""
+    return build_from_user_input(
+        input_dir    = input_dir,
+        output_dir   = output_dir,
+        visualize    = visualize,
+        interactive  = interactive,
+        confirm_cost = confirm_cost,
+    )

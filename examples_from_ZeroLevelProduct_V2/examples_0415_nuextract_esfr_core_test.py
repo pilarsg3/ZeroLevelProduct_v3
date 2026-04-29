@@ -15,7 +15,7 @@ assembly = assemble_objects(specs)
 show(assembly)
 """
 import json
-from zzz_nuextract_pipeline import postprocess, patch_spec
+from zzzz_nuextract_pipeline import postprocess, patch_spec
 from assemble import assemble_objects
 from ocp_vscode import show
 

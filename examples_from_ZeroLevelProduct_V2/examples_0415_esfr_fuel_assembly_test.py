@@ -159,7 +159,7 @@ show(assembly)
 """
 
 import json
-from zzz_nuextract_pipeline import postprocess
+from zzzz_nuextract_pipeline import postprocess
 from assemble import assemble_objects
 from ocp_vscode import show
 
