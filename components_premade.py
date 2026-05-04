@@ -67,7 +67,7 @@ import cadquery as cq
 
 from component_premade_reactor_vessel import create_reactor_vessel
 from component_premade_top_plate      import create_top_plate
-from component_premade_ihx            import create_ihx
+from component_premade_ihx_old            import create_ihx
 from component_premade_reactor_core   import create_reactor_core
 
 
