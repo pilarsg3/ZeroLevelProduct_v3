@@ -57,6 +57,7 @@ def assemble_objects(object_specs: List[Dict[str, Any]], export_path: str | None
         operation = spec_copy.pop("operation")
         spec_copy.pop("insert_into", None)   # strip before passing to build_solid
         spec_copy.pop("material", None)      # strip — not a build_solid parameter; original spec retains it for compute_bom(), export_openmc_materials(), etc.
+        spec_copy.pop("material_tag", None)  # strip — DAGMC tag, not a geometry parameter
 
         if "profile" in spec_copy:
             solid, obj_id = build_solid(operation, **spec_copy)

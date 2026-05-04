@@ -164,6 +164,9 @@ DRAWING_EXTRACTION_SCHEMA: dict[str, Any] = {
             "revolve_angle":  "number",
             "revolve_axis":   ["X", "Y", "Z"],
             "plane":          ["XY", "XZ", "YZ"],
+
+            # OpenMC / DAGMC
+            "material_tag":   "string",   # e.g. 'steel316', 'sodium', 'lead'
         }
     ],
 }
@@ -194,6 +197,11 @@ RULES
 8. If a dimension label is ambiguous, use your best engineering judgement and
    note the ambiguity in the top-level "description" field.
 9. Generate a short snake_case obj_id for each component.
+10. Set material_tag if the material is labelled or obvious from context
+    (e.g. 'steel316', 'sodium', 'lead', 'graphite'). Use null if unknown.
+11. ONLY extract components that are EXPLICITLY VISIBLE in the drawing.
+    Do NOT invent, infer, or add components that are not drawn
+    (e.g. no drain pipes, nozzles, supports, or internals unless clearly shown).
 
 JSON SCHEMA (all fields except obj_id and operation are nullable)
 -----------------------------------------------------------------
@@ -252,7 +260,7 @@ def _rebuild_component(c: dict[str, Any], s: float) -> dict[str, Any]:
     """Convert one flat extracted component into a nested assemble_objects() spec."""
     spec: dict[str, Any] = {}
 
-    for f in ("obj_id", "operation", "insert_into", "plane"):
+    for f in ("obj_id", "operation", "insert_into", "plane", "material_tag"):
         if c.get(f):
             spec[f] = c[f]
 
@@ -374,7 +382,8 @@ def _rebuild_component(c: dict[str, Any], s: float) -> dict[str, Any]:
     }
     _COMMON = {"obj_id", "operation", "obj_type", "insert_into",
            "center_coords", "rotation_angles",
-           "plane", "angle", "axis", "wall_thickness"}
+           "plane", "angle", "axis", "wall_thickness",
+           "material_tag"}
 
     obj_type = spec.get("obj_type")
     allowed = _COMMON | _FIELDS_BY_TYPE.get(obj_type, set()) #type: ignore
@@ -722,6 +731,10 @@ RULES
 8. If a value is ambiguous, use your best engineering judgement and note the
    ambiguity in the top-level "description" field.
 9. Generate a short snake_case obj_id for each component.
+10. Set material_tag if the material is mentioned or obvious from context
+    (e.g. 'steel316', 'sodium', 'lead', 'graphite'). Use null if unknown.
+11. ONLY extract components that are EXPLICITLY mentioned in the description.
+    Do NOT invent or add components not described by the user.
 
 JSON SCHEMA (all fields except obj_id and operation are nullable)
 -----------------------------------------------------------------
@@ -973,6 +986,97 @@ def _extract_specs(
         raise ValueError("Provide at least one of: description, drawings, or input_dir.")
 
 
+def export_for_openmc(
+    assembly:   Any,
+    output_dir: "str | Path",
+) -> tuple[list[str], list[str]]:
+    """
+    Export one STEP file per unique material_tag from a built assembly.
+
+    Groups all solids sharing a material_tag into one STEP file (as a compound).
+    Returns (step_files, material_tags) lists directly consumable by
+    convert_to_dagmc(step_files, tags, h5m_path).
+
+    Parameters
+    ----------
+    assembly : cq.Assembly
+        Built by assemble_objects(). Must have _specs attached.
+    output_dir : str | Path
+        Folder where per-material STEP files are written.
+        Files are named  material_<tag>.step
+
+    Returns
+    -------
+    step_files    : list[str]   — absolute paths to the exported STEP files
+    material_tags : list[str]   — corresponding material tags (same order)
+
+    Raises
+    ------
+    ValueError
+        If the assembly has no _specs, or no component has a material_tag.
+
+    Example
+    -------
+    >>> step_files, tags = export_for_openmc(assembly, "output/esfr")
+    >>> convert_to_dagmc(step_files, tags, "output/esfr/reactor.h5m")
+    """
+    import warnings
+    from collections import defaultdict
+    from pathlib import Path as _Path
+    import cadquery as cq
+
+    output_path = _Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    specs = getattr(assembly, "_specs", [])
+    if not specs:
+        raise ValueError(
+            "Assembly has no _specs attached. Build with assemble_objects()."
+        )
+
+    # Build {obj_id: material_tag} from specs
+    obj_to_tag: dict[str, str] = {}
+    for spec in specs:
+        tag = spec.get("material_tag")
+        if tag:
+            obj_to_tag[spec["obj_id"]] = str(tag)
+        else:
+            warnings.warn(
+                f"'{spec.get('obj_id', '?')}' has no material_tag — "
+                "excluded from OpenMC/DAGMC export.",
+                stacklevel=2,
+            )
+
+    if not obj_to_tag:
+        raise ValueError(
+            "No components have material_tag set. "
+            "Add 'material_tag' to each spec or use interactive=True to be prompted."
+        )
+
+    # Build {tag: [Shape, ...]} from assembly children
+    tag_to_shapes: dict[str, list[Any]] = defaultdict(list)
+    for child in assembly.children:
+        tag = obj_to_tag.get(child.name)
+        if tag is None or child.obj is None:
+            continue
+        obj = child.obj
+        shape = obj.val() if hasattr(obj, "val") else obj
+        tag_to_shapes[tag].append(shape)
+
+    # Export one STEP per material tag
+    step_files:    list[str] = []
+    material_tags: list[str] = []
+    for tag, shapes in sorted(tag_to_shapes.items()):
+        step_path = str(output_path / f"material_{tag}.step")
+        compound = cq.Compound.makeCompound(shapes)
+        cq.exporters.export(compound, step_path, exportType="STEP")
+        step_files.append(step_path)
+        material_tags.append(tag)
+        print(f"  ✓ {tag}: {len(shapes)} solid(s) → {step_path}")
+
+    return step_files, material_tags
+
+
 def _run_pipeline(
     specs:       list[dict[str, Any]],
     output_dir:  str,
@@ -1004,17 +1108,30 @@ def _run_pipeline(
     output_file = output_path / f"{output_stem}.step"
     try:
         export_step(assembly, str(output_file))  # type: ignore
-        print(f"✓ Exported: {output_file}")
+        print(f"✓ CAD export: {output_file}")
     except Exception as e:
         print(f"✗ Export failed: {e}")
         raise
+
+    # Per-material STEP files for DAGMC/OpenMC (only if specs carry material_tag)
+    if any(s.get("material_tag") for s in specs):
+        print("\n🔬 Exporting per-material STEP files for OpenMC/DAGMC...")
+        try:
+            openmc_step_files, openmc_tags = export_for_openmc(assembly, output_dir)
+            print(f"✓ {len(openmc_step_files)} material STEP file(s) ready for DAGMC")
+        except Exception as e:
+            print(f"✗ OpenMC export skipped: {e}")
+    else:
+        openmc_step_files, openmc_tags = [], []
+        print("ℹ  No material_tag set — skipping per-material STEP export.")
+        print("   Re-run with interactive=True or add 'material_tag' to specs.")
 
     if visualize:
         print("\n🎨 Visualizing...")
         show(assembly)  # type: ignore
 
     print("\n✅ Done!")
-    return assembly, specs, output_file
+    return assembly, specs, output_file, openmc_step_files, openmc_tags # type: ignore
 
 
 def build_from_user_input(
@@ -1136,13 +1253,14 @@ def build_from_user_input(
         print(f"✗ Extraction failed: {e}")
         raise
 
-    # ── Output filename stem ─────────────────────────────────────────────
+    # ── Output directory — put each example in its own subfolder ─────────
     if resolved_drawings:
-        stem = _Path(resolved_drawings[0]).parent.name or "assembly"
+        example_name = _Path(resolved_drawings[0]).parent.name or "assembly"
     else:
-        stem = "description_assembly"
+        example_name = "description_assembly"
+    sub_output_dir = str(_Path(output_dir) / example_name)
 
-    return _run_pipeline(specs, output_dir, stem, visualize, interactive)
+    return _run_pipeline(specs, sub_output_dir, "assembly", visualize, interactive)
 
 
 # ---------------------------------------------------------------------------
@@ -1282,32 +1400,11 @@ def _resolve_rv_diameter(spec: dict) -> None:
         print(f"    ✓ Derived wall_t = {spec['wall_t']:.6g}")
         return
 
-    # Need to ask
-    print("\n  Diameter specification for reactor_vessel:")
-    print("    [1]  inner_d + wall_t   (outer derived: outer_d = inner_d + 2*wall_t)")
-    print("    [2]  outer_d + wall_t   (inner derived: inner_d = outer_d - 2*wall_t)")
-    print("    [3]  inner_d + outer_d  (wall derived:  wall_t  = (outer_d - inner_d) / 2)")
-    choice = _ask_choice("Choose", ["1", "2", "3"])
-
-    if choice == "1":
-        if not has_inner:
-            spec["inner_d"] = _ask_float("inner_d (Inner diameter)")
-        if not has_wall:
-            spec["wall_t"] = _ask_float("wall_t (Wall thickness)")
-    elif choice == "2":
-        if not has_outer:
-            spec["outer_d"] = _ask_float("outer_d (Outer diameter)")
-        if not has_wall:
-            spec["wall_t"] = _ask_float("wall_t (Wall thickness)")
-        spec["inner_d"] = spec["outer_d"] - 2 * spec["wall_t"]  # type: ignore[operator]
-        print(f"    ✓ Derived inner_d = {spec['inner_d']:.6g}")
-    elif choice == "3":
-        if not has_inner:
-            spec["inner_d"] = _ask_float("inner_d (Inner diameter)")
-        if not has_outer:
-            spec["outer_d"] = _ask_float("outer_d (Outer diameter)")
-        spec["wall_t"] = (spec["outer_d"] - spec["inner_d"]) / 2  # type: ignore[operator]
-        print(f"    ✓ Derived wall_t = {spec['wall_t']:.6g}")
+    # Need to ask — always use inner_d + wall_t (most common for reactor vessels)
+    if not has_inner:
+        spec["inner_d"] = _ask_float("inner_d (Inner diameter)")
+    if not has_wall:
+        spec["wall_t"] = _ask_float("wall_t (Wall thickness)")
 
 
 # ---------------------------------------------------------------------------
@@ -1417,13 +1514,47 @@ def ask_for_missing_params(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 val = input("  Enter bottom_head_type: ").strip()
                 if val in ("flat", "hemispherical", "ellipsoidal", "torispherical"):
                     spec["bottom_head_type"] = val
-                    if val == "ellipsoidal":
-                        hd = _ask_float("bottom head_depth (ellipsoidal depth)")
-                        spec["bottom_head_params"] = {"head_depth": hd}
                 elif val:
                     print("  ✗ Unrecognised type — skipped")
             else:
                 print(f"✓ bottom_head_type: {spec['bottom_head_type']}")
+
+            # Ask for head params if needed — also re-ask if extracted value is invalid
+            head_type = spec.get("bottom_head_type")
+            existing_params = spec.get("bottom_head_params") or {}
+            od = (spec.get("inner_d") or 0) + 2 * (spec.get("wall_t") or 0)
+            if head_type == "ellipsoidal" and existing_params.get("head_depth") is None:
+                hd = _ask_float("bottom head_depth (ellipsoidal depth)")
+                spec["bottom_head_params"] = {**existing_params, "head_depth": hd}
+            elif head_type == "torispherical":
+                Rc = existing_params.get("Rc")
+                # Validate: Rc defaults to od inside the builder, so only re-ask if present but wrong
+                if Rc is not None and od > 0 and Rc <= od / 2:
+                    print(f"  ✗ Extracted Rc={Rc:.4g} is invalid (must be > od/2 = {od/2:.4g}) — please re-enter")
+                    Rc = None
+                if Rc is None:
+                    rc_min = f" > {od/2:.4g}" if od > 0 else ""
+                    rc_default = f"; Enter = use default Rc=od={od:.4g}" if od > 0 else ""
+                    Rc = _ask_float(f"Rc — Crown radius (must be{rc_min}{rc_default})", required=False)
+                    if Rc is not None:
+                        existing_params = {**existing_params, "Rc": Rc}
+                else:
+                    print(f"✓ bottom_head_params Rc: {Rc}")
+                if existing_params.get("rk") is None:
+                    rk = _ask_float("bottom_head_params rk (Knuckle radius, optional — Enter to use default)", required=False)
+                    if rk is not None:
+                        if rk <= 0:
+                            print(f"  ✗ rk must be > 0 — skipped, default will be used")
+                            rk = None
+                        else:
+                            existing_params = {**existing_params, "rk": rk}
+                else:
+                    print(f"✓ bottom_head_params rk: {existing_params['rk']}")
+                spec["bottom_head_params"] = existing_params
+            elif head_type == "flat" and existing_params.get("plate_t") is None:
+                pt = _ask_float("bottom_head_params plate_t (Flat head plate thickness, optional — Enter to use wall_t)", required=False)
+                if pt is not None:
+                    spec["bottom_head_params"] = {**existing_params, "plate_t": pt}
 
         # ── reactor_top_plate ─────────────────────────────────────────────
         elif obj_type == "reactor_top_plate":
@@ -1436,6 +1567,33 @@ def ask_for_missing_params(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     spec[field] = _ask_float(prompt)
                 else:
                     print(f"✓ {field}: {spec[field]}")
+
+            # Validate / complete each hole_group
+            hole_groups = spec.get("hole_groups") or []
+            for g_idx, group in enumerate(hole_groups):
+                prefix = f"  hole_groups[{g_idx}]"
+                layout = group.get("layout", "symmetric")
+                print(f"{prefix} layout={layout!r}")
+
+                if group.get("hole_diameter") is None:
+                    group["hole_diameter"] = _ask_float(f"{prefix} hole_diameter")
+                else:
+                    print(f"{prefix} hole_diameter: {group['hole_diameter']}")
+
+                if layout in ("symmetric", "custom_angles"):
+                    if group.get("placement_radius") is None:
+                        group["placement_radius"] = _ask_float(
+                            f"{prefix} placement_radius (radial distance from plate centre)"
+                        )
+                    else:
+                        print(f"{prefix} placement_radius: {group['placement_radius']}")
+
+                if layout == "symmetric":
+                    if group.get("count") is None:
+                        raw = input(f"{prefix} count (number of holes): ").strip()
+                        group["count"] = int(raw) if raw else 1
+                    else:
+                        print(f"{prefix} count: {group['count']}")
 
         # ── ihx ───────────────────────────────────────────────────────────
         elif obj_type == "ihx":
@@ -1450,9 +1608,10 @@ def ask_for_missing_params(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 else:
                     print(f"✓ {field}: {spec[field]}")
 
-            # Optional fields
+            # Optional fields with cross-field ordering constraints
+            shell_r = (spec.get("shell_od") or 0) / 2
             optional_ihx = [
-                ("inner_od",                "inner_od (Inner cylinder outer diameter)"),
+                ("inner_od",                f"inner_od (Inner cylinder outer diameter, must be < shell_od={spec.get('shell_od', '?')})"),
                 ("inner_wall_t",            "inner_wall_t (Inner cylinder wall thickness)"),
                 ("inner_h",                 "inner_h (Inner cylinder height)"),
                 ("bundle_od",               "bundle_od (Bundle outer diameter)"),
@@ -1475,9 +1634,28 @@ def ask_for_missing_params(specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 else:
                     print(f"✓ {field}: {spec[field]}")
 
+            # Cross-field constraint validation
+            inner_r = (spec.get("inner_od") or 0) / 2
+            if spec.get("inner_od") and shell_r > 0 and inner_r >= shell_r:
+                print(f"  ✗ inner_od={spec['inner_od']:.4g} must be < shell_od={spec.get('shell_od'):.4g} — re-enter")
+                spec["inner_od"] = _ask_float(f"inner_od (must be < shell_od={spec.get('shell_od'):.4g})")
+            if spec.get("bundle_od") and spec.get("bundle_id") and spec["bundle_id"] >= spec["bundle_od"]:
+                print(f"  ✗ bundle_id={spec['bundle_id']:.4g} must be < bundle_od={spec['bundle_od']:.4g} — re-enter")
+                spec["bundle_id"] = _ask_float(f"bundle_id (must be < bundle_od={spec['bundle_od']:.4g})")
+
         # ── unknown type ──────────────────────────────────────────────────
         else:
             print(f"  (no interactive checks defined for type '{obj_type}' — passed through)")
+
+        # ── material_tag (for OpenMC/DAGMC) — asked for every component ──
+        if spec.get("material_tag") is None:
+            print("\n  material_tag (for OpenMC/DAGMC — press Enter to skip):")
+            print("    Examples: steel316, sodium, lead, graphite, helium")
+            val = input("  Enter material_tag: ").strip()
+            if val:
+                spec["material_tag"] = val
+        else:
+            print(f"✓ material_tag: {spec['material_tag']}")
 
         updated_specs.append(spec)
 

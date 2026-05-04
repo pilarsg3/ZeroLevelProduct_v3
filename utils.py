@@ -10,13 +10,19 @@ logger = logging.getLogger(__name__)
 PlaneName = Literal["XY", "XZ", "YZ"]
 AxisName = Literal["X", "Y", "Z"]
 
-def export_step(shape: cq.Shape, path: str):
-    """Export a CadQuery solid to STEP."""
-    cq.exporters.export(shape, path, exportType="STEP")
+def export_step(shape, path: str):
+    """Export a CadQuery solid or assembly to STEP."""
+    if isinstance(shape, cq.Assembly):
+        cq.exporters.export(shape.toCompound(), path, exportType="STEP")
+    else:
+        cq.exporters.export(shape, path, exportType="STEP")
 
-def export_stl(shape: cq.Shape, path: str, tolerance: float = 0.01):
-    """Export a CadQuery solid to STL."""
-    cq.exporters.export(shape, path, exportType="STL", tolerance=tolerance)
+def export_stl(shape, path: str, tolerance: float = 0.01):
+    """Export a CadQuery solid or assembly to STL."""
+    if isinstance(shape, cq.Assembly):
+        cq.exporters.export(shape.toCompound(), path, exportType="STL", tolerance=tolerance)
+    else:
+        cq.exporters.export(shape, path, exportType="STL", tolerance=tolerance)
 
 
 
