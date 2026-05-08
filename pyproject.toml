@@ -45,6 +45,7 @@ py-modules = [
     "assemble",
     "build_3D_solid",
     "claude_pipeline",
+    "component_premade_diagrid",
     "component_premade_ihx",
     "component_premade_primary_pump",
     "component_premade_reactor_core",
