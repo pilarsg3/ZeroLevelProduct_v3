@@ -91,7 +91,7 @@ def path_tuple_diag():
 # ----------------------------------------------------------------
 # Examples
 # ----------------------------------------------------------------
-examples = [
+examples = [("circle   + analytical S-curve",  p_circle(),   path_analytical_s_curve())]
     # --- line Z, all profiles ---
     # ("rect     + line Z",         p_rect(),     path_line_z()),
     # ("circle   + line Z",         p_circle(),   path_line_z()),
@@ -113,6 +113,7 @@ examples = [
     # ("circle   + line diag",      p_circle(),   path_line_diag()),
     # ("triangle + line diag",      p_triangle(), path_line_diag()),
 
+"""
     # --- helix tall, all profiles ---
     ("rect     + helix tall",     p_rect(),     path_helix_tall()),
     ("circle   + helix tall",     p_circle(),   path_helix_tall()),
@@ -185,7 +186,8 @@ examples = [
     ("ellipse  + tuple Z",        p_ellipse(),  path_tuple_z()),
     ("rect     + tuple diag",     p_rect(),     path_tuple_diag()),
     ("circle   + tuple diag",     p_circle(),   path_tuple_diag()),
-]
+    """
+#]
 
 for label, profile, path in examples:
     print(f"Showing: {label}")

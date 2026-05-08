@@ -1,7 +1,7 @@
 """
 components_premade/simple_ihx.py
 ─────────────────────────────────
-Parametric shell-and-tube IHX builder for ZeroLevelProduct V2.
+Parametric shell-and-tube IHX builder for ZeroLevelProduct V3.
 
 Geometry (bottom → top, z increasing upward)
 ─────────────────────────────────────────────
@@ -43,7 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cadquery as cq
 
 
-def build_simple_ihx(spec: Dict[str, Any]) -> Dict[str, Any]:
+def create_ihx(spec: Dict[str, Any]) -> Dict[str, Any]:
     """
     Build a simple shell-and-tube IHX. All lengths in mm.
 
@@ -300,7 +300,7 @@ def build_simple_ihx(spec: Dict[str, Any]) -> Dict[str, Any]:
                 .rotate((0, 0, 0), (0, 0, 1), theta_deg)
                 .val()
             )
-            bs_sh = bs_sh.cut(cutter)
+            bs_sh = bs_sh.cut(cutter)       # type: ignore
 
         components["bundle_shell"] = bs_sh
 
@@ -370,10 +370,10 @@ def build_simple_ihx(spec: Dict[str, Any]) -> Dict[str, Any]:
         cq.Workplane("XY").workplane(offset=cz_rs).cylinder(rs_h, rs_or)
         .cut(cq.Workplane("XY").workplane(offset=cz_rs).cylinder(rs_h, rs_ir))
     )
-    # Lateral bore: only through +X wall
+    # Lateral bore: only through +X wall (offset=0 so bore doesn't reach -X wall)
     rs_wp = rs_wp.cut(
-        cq.Workplane("YZ").workplane(offset=rs_ir - 1)
-        .center(0, z_rs_bot + lat_z).circle(lat_or).extrude(rs_wall + 2)
+        cq.Workplane("YZ").workplane(offset=0)
+        .center(0, z_rs_bot + lat_z).circle(lat_or).extrude(rs_or + lat_len)
     )
     components["outlet_riser"] = rs_wp.val()
 
@@ -438,7 +438,7 @@ if __name__ == "__main__":
     }
 
     print("Building simple IHX ...")
-    parts = build_simple_ihx(demo_spec)
+    parts = create_ihx(demo_spec)
     assembly = cq.Assembly()
     for name, shape in parts.items():
         assembly.add(shape, name=name)
