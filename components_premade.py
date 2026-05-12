@@ -121,6 +121,7 @@ def _build_primary_pump(obj: dict[str, Any]) -> cq.Workplane:
         nozzle_L_leg   = obj["nozzle_L_leg"],
         nozzle_R_bend  = obj["nozzle_R_bend"],
         nozzle_arc_deg = obj["nozzle_arc_deg"],
+        nozzle_L_inlet = obj["nozzle_L_inlet"],
         nozzle_z       = obj["nozzle_z"],
         flange_width   = obj["flange_width"],
         flange_height  = obj["flange_height"],
@@ -129,14 +130,43 @@ def _build_primary_pump(obj: dict[str, Any]) -> cq.Workplane:
         flange_z_top   = obj.get("flange_z_top", None),
     )
 
+
+# def _build_diagrid(obj: dict[str, Any]) -> cq.Workplane:
+#     return create_diagrid(
+#         diameter  = obj["diameter"],
+#         thickness = obj["thickness"],
+#         z_bottom  = obj.get("z_bottom", 0.0),
+#     )
+ 
+# def _build_diagrid(obj: dict[str, Any]) -> cq.Workplane:
+#     return create_diagrid(
+#         diameter           = obj["diameter"],
+#         thickness          = obj["thickness"],
+#         z_bottom           = obj.get("z_bottom", 0.0),
+#         # ── new nozzle boss params ──
+#         pump_angles_deg    = obj.get("pump_angles_deg"),
+#         nozzle_z_abs       = obj.get("nozzle_z_abs"),
+#         nozzle_r_bore      = obj.get("nozzle_r_bore",      0.230),
+#         nozzle_depth       = obj.get("nozzle_depth",       0.300),
+#         nozzle_r_boss      = obj.get("nozzle_r_boss",      0.301),
+#         nozzle_boss_height = obj.get("nozzle_boss_height", 0.080),
+#     )
+
 def _build_diagrid(obj: dict[str, Any]) -> cq.Workplane:
     return create_diagrid(
-        diameter  = obj["diameter"],
-        thickness = obj["thickness"],
-        z_bottom  = obj.get("z_bottom", 0.0),
+        diameter                = obj["diameter"],
+        thickness               = obj["thickness"],
+        z_bottom                = obj.get("z_bottom", 0.0),
+        nozzle_boss_angles_deg  = obj.get("nozzle_boss_angles_deg"),  # ← updated
+        nozzle_z_abs            = obj.get("nozzle_z_abs"),
+        nozzle_r_bore           = obj.get("nozzle_r_bore",      0.230),
+        nozzle_depth            = obj.get("nozzle_depth",       0.300),
+        nozzle_r_boss           = obj.get("nozzle_r_boss",      0.301),
+        nozzle_boss_height      = obj.get("nozzle_boss_height", 0.080),
     )
- 
- 
+
+
+
 # ---------------------------------------------------------------------------
 # Registry — the only thing that needs editing when adding a new component
 # ---------------------------------------------------------------------------

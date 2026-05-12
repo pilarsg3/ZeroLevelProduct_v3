@@ -1,18 +1,14 @@
-# RPV + top plate + IHX × 3 + pump × 3 + diagrid + core + strongback
-# All through assemble_objects()
-
 import math
 from assemble import assemble_objects
 from ocp_vscode import show
 
-_SB_Z_BOTTOM       = -1.702                       # outer skirt rests on torispherical head at r=3.030 m
-_SB_TOP_Z          = _SB_Z_BOTTOM + 1.242         # = -0.460 m  (strongback top face)
+_SB_Z_BOTTOM       = -1.702
+_SB_TOP_Z          = _SB_Z_BOTTOM + 1.242
 _DIAGRID_THICKNESS = 1.050
-_DIAGRID_Z_BOTTOM  = _SB_TOP_Z                    # = -0.460 m  (sits on strongback)
-_DIAGRID_TOP_Z     = _DIAGRID_Z_BOTTOM + _DIAGRID_THICKNESS   # = +0.590 m
-_CORE_Z_BOTTOM     = _DIAGRID_TOP_Z               # core sits on top of diagrid
+_DIAGRID_Z_BOTTOM  = _SB_TOP_Z
+_DIAGRID_TOP_Z     = _DIAGRID_Z_BOTTOM + _DIAGRID_THICKNESS
+_CORE_Z_BOTTOM     = _DIAGRID_TOP_Z
 
-# ── Reactor pressure vessel ───────────────────────────────────────────────────
 _RPV_INNER_D    = 8.91
 _RPV_WALL_T     = 0.05
 _RPV_STRAIGHT_H = 9.0
@@ -36,7 +32,6 @@ _xk            = _r - _TORI_rk
 _zc            = math.sqrt((_TORI_Rc - _TORI_rk)**2 - _xk**2)
 _HEAD_BOTTOM_Z = _zc - _TORI_Rc
 
-# ── Top plate ─────────────────────────────────────────────────────────────────
 TOP_PLATE = {
     "operation": "primitive",
     "obj_id":    "top_plate",
@@ -67,7 +62,6 @@ TOP_PLATE = {
     ],
 }
 
-# ── IHX ───────────────────────────────────────────────────────────────────────
 _ihx_r = 2.730
 
 def _make_ihx(obj_id: str, angle_deg: float, center_z: float = 7.0) -> dict:
@@ -117,7 +111,6 @@ IHX1 = _make_ihx("ihx_1",   0.0)
 IHX2 = _make_ihx("ihx_2", 120.0)
 IHX3 = _make_ihx("ihx_3", 240.0)
 
-# ── Primary pumps ─────────────────────────────────────────────────────────────
 _PUMP_BARREL_HEIGHT = 12.0
 _PUMP_Z_BOTTOM      = _HEAD_BOTTOM_Z + 2.562
 _PUMP_CENTER_Z      = _PUMP_Z_BOTTOM + _PUMP_BARREL_HEIGHT / 2
@@ -136,10 +129,11 @@ def _make_pump(obj_id: str, angle_deg: float) -> dict:
         "barrel_height":   _PUMP_BARREL_HEIGHT,
         "nozzle_r_pipe":   0.460 / 2,
         "nozzle_wall_t":   0.025,
-        "nozzle_L_leg":    0.800,
-        "nozzle_R_bend":   0.800,
-        "nozzle_arc_deg":  112.5,
-        "nozzle_z":        0.450,
+        "nozzle_L_leg":    0.600,
+        "nozzle_R_bend":   0.460,
+        "nozzle_arc_deg":  105.0,
+        "nozzle_L_inlet":  0.050,
+        "nozzle_z":        0.350,
         "flange_width":    0.548,
         "flange_height":   0.900,
         "flange_depth":    0.500,
@@ -149,46 +143,67 @@ PUMP1 = _make_pump("pump_1",  60.0)
 PUMP2 = _make_pump("pump_2", 180.0)
 PUMP3 = _make_pump("pump_3", 300.0)
 
-# ── Diagrid ───────────────────────────────────────────────────────────────────
-# Sits on top of the strongback; core sits on top of the diagrid.
+# ── Diagrid nozzle boss angles ────────────────────────────────────────────────
+def _nozzle_boss_angles() -> list[float]:
+    arc_rad   = math.radians(105.0)
+    L_leg     = 0.600;  L_inlet = 0.050;  R_bend = 0.460
+    barrel_r  = 1.350 / 2
+    overshoot = 0.040 * 1.5
+    ex  = R_bend * (1.0 - math.cos(arc_rad)) + L_leg * math.sin(arc_rad)
+    ey  = L_inlet + R_bend * math.sin(arc_rad) + L_leg * math.cos(arc_rad)
+    lx  = ey + (barrel_r - overshoot)
+    ly  = -ex
+    phi = math.degrees(math.atan2(lx, _pump_r + ly))  # ≈ 23.4°
+    angles = []
+    for a in [60.0, 180.0, 300.0]:
+        angles.append(a - phi)   # right nozzle
+        angles.append(a + phi)   # left  nozzle
+    return angles
+
+_NOZZLE_BOSS_ANGLES = _nozzle_boss_angles()
+_PUMP_NOZZLE_Z_ABS  = _PUMP_Z_BOTTOM + 0.350   # ≈ +0.247 m
+
 DIAGRID = {
-    "operation": "primitive",
-    "obj_id":    "diagrid",
-    "obj_type":  "diagrid",
-    "diameter":  4.660,
-    "thickness": _DIAGRID_THICKNESS,
-    "z_bottom":  _DIAGRID_Z_BOTTOM,
+    "operation":              "primitive",
+    "obj_id":                 "diagrid",
+    "obj_type":               "diagrid",
+    "diameter":               4.660,
+    "thickness":              _DIAGRID_THICKNESS,
+    "z_bottom":               _DIAGRID_Z_BOTTOM,
+    "nozzle_boss_angles_deg": _NOZZLE_BOSS_ANGLES,
+    "nozzle_z_abs":           _PUMP_NOZZLE_Z_ABS,
+    "nozzle_r_bore":          0.230,
+    "nozzle_depth":           0.300,
+    "nozzle_r_boss":          0.301,
+    "nozzle_boss_height":     0.080,
 }
 
-# ── Reactor core ──────────────────────────────────────────────────────────────
 CORE = {
     "operation": "primitive",
     "obj_id":    "core",
     "obj_type":  "reactor_core",
     "radius":    3.600 / 2,
     "height":    3.910,
-    "z_bottom":  _CORE_Z_BOTTOM,    # sits on top of diagrid (= +0.590 m)
+    "z_bottom":  _CORE_Z_BOTTOM,
 }
 
-# ── Strongback ────────────────────────────────────────────────────────────────
 STRONGBACK = {
-    "operation":          "primitive",
-    "obj_id":             "strongback",
-    "obj_type":           "strongback",
-    "total_height":       1.242,
-    "flange_radius":      2.684,
-    "skirt_outer_radius": 3.030,
-    "skirt_inner_radius": 2.243,
-    "skirt_height":       0.436,
-    "taper_bottom_z":     0.356,
+    "operation":              "primitive",
+    "obj_id":                 "strongback",
+    "obj_type":               "strongback",
+    "total_height":           1.242,
+    "flange_radius":          2.684,
+    "skirt_outer_radius":     3.030,
+    "skirt_inner_radius":     2.243,
+    "skirt_height":           0.436,
+    "taper_bottom_z":         0.356,
     "bore_radius":            0.303,
     "small_hole_radius":      0.0755,
     "small_hole_count":       6,
     "small_hole_placement_r": 0.900,
-    "z_bottom":           _SB_Z_BOTTOM,
+    "z_bottom":               _SB_Z_BOTTOM,
 }
 
-# ── Assemble ──────────────────────────────────────────────────────────────────
 show(assemble_objects([
     RPV,
     TOP_PLATE,
@@ -198,10 +213,6 @@ show(assemble_objects([
     CORE,
     STRONGBACK,
 ]))
-
-
-
-
 
 
 
