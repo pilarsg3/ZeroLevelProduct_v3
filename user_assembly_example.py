@@ -1,0 +1,184 @@
+"""
+Example user assembly — paramak-style.
+
+The user writes ONLY geometric parameters. There are no `center_coords`,
+no `rotation_angles`, no cross-component fields like `nozzle_z_abs` on
+the diagrid. The resolver fills those in by inspecting which components
+are in the assembly and applying its connection rules.
+
+How the user influences placement:
+  • Each component declares its OWN positioning intent in human terms
+    (e.g. a pump declares `at_angle_deg` and `at_radius`).
+  • Diagrid/strongback/etc. just declare `z_bottom` (vertical stack).
+  • The resolver does the rest.
+
+Manual override
+  • To bypass the resolver for one component, set both `center_coords`
+    and `rotation_angles` explicitly — the resolver will respect them
+    and only fill in cross-component params on the OTHER side of the
+    connection (e.g. boss angles on the diagrid).
+  • To remove a component from resolver consideration entirely, set
+    `manual_placement: True`.
+"""
+
+import math
+from assemble           import assemble_objects
+from component_resolver import resolve
+from ocp_vscode         import show
+
+
+# ── Vertical stack ─────────────────────────────────────────────────────
+_SB_Z_BOTTOM       = -1.702
+_DIAGRID_Z_BOTTOM  = _SB_Z_BOTTOM + 1.242
+_DIAGRID_TOP_Z     = _DIAGRID_Z_BOTTOM + 1.050
+_CORE_Z_BOTTOM     = _DIAGRID_TOP_Z
+
+_RPV_STRAIGHT_H = 9.0
+
+
+# ── Components: geometry only ──────────────────────────────────────────
+
+RPV = {
+    "obj_type":           "reactor_vessel",
+    "obj_id":             "rpv",
+    "inner_d":            8.91,
+    "wall_t":             0.05,
+    "straight_h":         _RPV_STRAIGHT_H,
+    "bottom_head_type":   "torispherical",
+    "bottom_head_params": {"Rc": 5.245, "rk": 0.379},
+}
+
+TOP_PLATE = {
+    "obj_type":  "reactor_top_plate",
+    "obj_id":    "top_plate",
+    "outer_d":   10.0,
+    "thickness": 0.5,
+    "z_bottom":  _RPV_STRAIGHT_H,
+    "hole_groups": [
+        {"hole_diameter": 2.224, "layout": "explicit_positions",
+         "positions": [(0.0, 0.0)]},
+        {"hole_diameter": 1.600, "layout": "symmetric", "count": 3,
+         "placement_radius": 2.730, "start_angle_deg": 0.0},
+        {"hole_diameter": 1.350, "layout": "symmetric", "count": 3,
+         "placement_radius": 3.369, "start_angle_deg": 60.0},
+    ],
+}
+
+# IHX still uses manual placement (no resolver rule yet for ihx ↔ top_plate).
+# Set manual_placement so the resolver doesn't complain about missing
+# `at_angle_deg`/`at_radius` keys it doesn't yet know how to handle.
+_IHX_R = 2.730
+def _make_ihx(obj_id, angle_deg, center_z=7.0):
+    rad = math.radians(angle_deg)
+    return {
+        "obj_type":          "ihx",
+        "obj_id":            obj_id,
+        "manual_placement":  True,
+        "center_coords":     (_IHX_R * math.cos(rad), _IHX_R * math.sin(rad), center_z),
+        "rotation_angles":   (0.0, 0.0, angle_deg),
+        "lower_plenum_inner_radius": 0.760, "lower_plenum_wall": 0.025,
+        "lower_plenum_height":       0.600, "lower_plenum_dome_radius": 0.785,
+        "upper_plenum_inner_radius": 0.760, "upper_plenum_wall": 0.025,
+        "upper_plenum_height":       0.600, "upper_plenum_dome_radius": 0.785,
+        "bundle_height":             6.0,
+        "tube_rings": [
+            dict(n=8,  inner_radius=0.020, wall=0.003, pitch_radius=0.12),
+            dict(n=16, inner_radius=0.018, wall=0.003, pitch_radius=0.25),
+            dict(n=24, inner_radius=0.016, wall=0.003, pitch_radius=0.40),
+            dict(n=32, inner_radius=0.014, wall=0.003, pitch_radius=0.55),
+            dict(n=40, inner_radius=0.014, wall=0.003, pitch_radius=0.70),
+        ],
+        "central_pipe_inner_radius": 0.20, "central_pipe_wall": 0.025,
+        "central_pipe_bend_radius":  0.25, "central_pipe_z_offset": 0.20,
+        "central_pipe_horiz_len":    0.60,
+        "riser_inner_radius":        0.20, "riser_wall": 0.025,
+        "riser_height":              0.60,
+        "lateral_pipe_inner_radius": 0.10, "lateral_pipe_wall": 0.015,
+        "lateral_pipe_length":       0.50, "lateral_pipe_z_offset": 0.30,
+        "bundle_shell_inner_radius": 0.775, "bundle_shell_wall": 0.025,
+        "bundle_shell_n_bars":       8,    "bundle_shell_bar_width": 0.030,
+        "bundle_shell_window_height":2.50,
+    }
+IHX1 = _make_ihx("ihx_1",   0.0)
+IHX2 = _make_ihx("ihx_2", 120.0)
+IHX3 = _make_ihx("ihx_3", 240.0)
+
+
+# ── Pumps: GEOMETRY + intent. No center_coords, no rotation_angles. ────
+def _make_pump(obj_id, angle_deg):
+    return {
+        "obj_type":        "primary_pump",
+        "obj_id":          obj_id,
+        "at_angle_deg":    angle_deg,
+        "at_radius":       3.369,
+        "barrel_radius":   1.350 / 2,
+        "barrel_wall_t":   0.040,
+        "barrel_height":   12.0,
+        "nozzle_r_pipe":   0.460 / 2,
+        "nozzle_wall_t":   0.025,
+        "nozzle_L_leg":    0.600,
+        "nozzle_R_bend":   0.460,
+        "nozzle_arc_deg":  105.0,
+        "nozzle_L_inlet":  0.050,
+        "nozzle_z":        0.230,
+        "flange_width":    0.548,
+        "flange_height":   0.900,
+        "flange_depth":    0.500,
+    }
+PUMP1 = _make_pump("pump_1",  60.0)
+PUMP2 = _make_pump("pump_2", 180.0)
+PUMP3 = _make_pump("pump_3", 300.0)
+
+
+# ── Diagrid: GEOMETRY only. Resolver fills in boss params + Z. ─────────
+DIAGRID = {
+    "obj_type":      "diagrid",
+    "obj_id":        "diagrid",
+    "diameter":      4.660,
+    "thickness":     1.050,
+    "z_bottom":      _DIAGRID_Z_BOTTOM,
+    "wall_t_side":   0.030,
+    "wall_t_top":    0.030,
+    "wall_t_bottom": 0.030,
+}
+
+CORE = {
+    "obj_type": "reactor_core",
+    "obj_id":   "core",
+    "radius":   3.600 / 2,
+    "height":   3.910,
+    "z_bottom": _CORE_Z_BOTTOM,
+}
+
+STRONGBACK = {
+    "obj_type":               "strongback",
+    "obj_id":                 "strongback",
+    "total_height":           1.242,
+    "flange_radius":          2.684,
+    "skirt_outer_radius":     3.030,
+    "skirt_inner_radius":     2.243,
+    "skirt_height":           0.436,
+    "taper_bottom_z":         0.356,
+    "bore_radius":            0.303,
+    "small_hole_radius":      0.0755,
+    "small_hole_count":       6,
+    "small_hole_placement_r": 0.900,
+    "z_bottom":               _SB_Z_BOTTOM,
+}
+
+
+# ── Resolve + assemble ─────────────────────────────────────────────────
+user_dicts = [
+    RPV, TOP_PLATE,
+    IHX1, IHX2, IHX3,
+    PUMP1, PUMP2, PUMP3,
+    DIAGRID,
+    CORE, STRONGBACK,
+]
+
+# assemble_objects expects "operation": "primitive" — add it automatically.
+for d in user_dicts:
+    d.setdefault("operation", "primitive")
+
+resolved = resolve(user_dicts)
+show(assemble_objects(resolved, export_path="output/example_0515_from_user_assembly_with_validation_and_components_names.step"))

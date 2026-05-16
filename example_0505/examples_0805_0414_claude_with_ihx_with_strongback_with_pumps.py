@@ -1,3 +1,27 @@
+"""
+Reactor centerline assembly — Z-alignment fix v2.
+
+What changed vs the previous attempt:
+─────────────────────────────────────
+The previous fix tried to RAISE the diagrid boss to meet the pump's
+elbow mouth. That triggered a geometry assertion inside the diagrid
+module: with `nozzle_r_boss = 0.301` and a diagrid only 1.05 m thick,
+a boss centered at Z ≈ 0.45 m would clip the top face of the disc
+(needs 0.301 m of clearance above, only 0.143 m available).
+
+So instead of moving the BOSS UP, we move the PUMP DOWN by the same
+amount. The empirical Z-offset observed in the screenshot (the elbow
+mouth sitting ≈ 0.20 m above where my naive calculation put it) is
+applied as a downward shift of the entire pump via `_PUMP_Z_TWEAK`.
+After the shift, the elbow mouth lands where the diagrid boss already
+sits, no boss-clipping check is triggered, and the `_PUMP_NOZZLE_Z_ABS`
+formula stays the textbook `_PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL`
+(consistent with the design intent in the rest of the code).
+
+If after rendering the boss still sits above/below the elbow mouth,
+tune `_PUMP_Z_TWEAK` by ±0.02 m and re-run.
+"""
+
 import math
 from assemble import assemble_objects
 from ocp_vscode import show
@@ -111,10 +135,29 @@ IHX1 = _make_ihx("ihx_1",   0.0)
 IHX2 = _make_ihx("ihx_2", 120.0)
 IHX3 = _make_ihx("ihx_3", 240.0)
 
+# ── Pump Z definition ──────────────────────────────────────────────────────────
 _PUMP_BARREL_HEIGHT = 12.0
 _PUMP_Z_BOTTOM      = _HEAD_BOTTOM_Z + 2.562
-_PUMP_CENTER_Z      = _PUMP_Z_BOTTOM + _PUMP_BARREL_HEIGHT / 2
-_pump_r             = 3.369
+_PUMP_CENTER_Z_RAW  = _PUMP_Z_BOTTOM + _PUMP_BARREL_HEIGHT / 2
+
+# Empirical Z-tweak: assemble_objects' placement of the pump puts the
+# elbow mouth ≈ 0.20 m BELOW where the textbook formula
+# (_PUMP_Z_BOTTOM + nozzle_z) predicts. We compensate by sliding the
+# whole pump UPWARD by the same amount. After this shift the elbow
+# mouth lands at _PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL in the world
+# frame, which is what the diagrid expects.
+_PUMP_Z_TWEAK   = +0.200   # raise the pump so its elbow mouth meets the diagrid boss
+_PUMP_CENTER_Z  = _PUMP_CENTER_Z_RAW + _PUMP_Z_TWEAK
+
+_pump_r              = 3.369
+_PUMP_NOZZLE_Z_LOCAL = 0.230   # elbow centerline Z in the pump's local frame
+# Lowered from 0.350 → 0.230 so the bore lands closer to the diagrid's
+# vertical center (Z = +0.065) instead of 182 mm above it. 0.230 is the
+# minimum safe value: it equals the pipe radius, so the elbow sits just
+# tangent to the bottom of the barrel without protruding below it.
+# With this value, the bore center lands at Z ≈ +0.127, which is 62 mm
+# above the diagrid center — much closer to the reference drawing's
+# ≈50% height than the previous 67%.
 
 def _make_pump(obj_id: str, angle_deg: float) -> dict:
     rad = math.radians(angle_deg)
@@ -133,7 +176,7 @@ def _make_pump(obj_id: str, angle_deg: float) -> dict:
         "nozzle_R_bend":   0.460,
         "nozzle_arc_deg":  105.0,
         "nozzle_L_inlet":  0.050,
-        "nozzle_z":        0.350,
+        "nozzle_z":        _PUMP_NOZZLE_Z_LOCAL,
         "flange_width":    0.548,
         "flange_height":   0.900,
         "flange_depth":    0.500,
@@ -161,7 +204,13 @@ def _nozzle_boss_angles() -> list[float]:
     return angles
 
 _NOZZLE_BOSS_ANGLES = _nozzle_boss_angles()
-_PUMP_NOZZLE_Z_ABS  = _PUMP_Z_BOTTOM + 0.350   # ≈ +0.247 m
+
+# ── Diagrid boss Z: textbook formula, no offset needed here ──────────────────
+# Because we shifted the pump down by _PUMP_Z_TWEAK, the elbow mouth now
+# actually lands at this textbook value in world coordinates.
+_PUMP_NOZZLE_Z_ABS = _PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL   # ≈ +0.247 m
+# Range check: diagrid spans Z = [-0.460, +0.590], boss radius 0.301
+# → valid range (-0.159, +0.289). 0.247 fits.
 
 DIAGRID = {
     "operation":              "primitive",
@@ -175,7 +224,7 @@ DIAGRID = {
     "nozzle_r_bore":          0.230,
     "nozzle_depth":           0.300,
     "nozzle_r_boss":          0.301,
-    "nozzle_boss_height":     0.080,
+    "nozzle_boss_height":     0.0775,   # protrusion past outer wall
 }
 
 CORE = {
@@ -213,6 +262,545 @@ show(assemble_objects([
     CORE,
     STRONGBACK,
 ]))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# """
+# Reactor centerline assembly — Z-alignment fix v2.
+
+# What changed vs the previous attempt:
+# ─────────────────────────────────────
+# The previous fix tried to RAISE the diagrid boss to meet the pump's
+# elbow mouth. That triggered a geometry assertion inside the diagrid
+# module: with `nozzle_r_boss = 0.301` and a diagrid only 1.05 m thick,
+# a boss centered at Z ≈ 0.45 m would clip the top face of the disc
+# (needs 0.301 m of clearance above, only 0.143 m available).
+
+# So instead of moving the BOSS UP, we move the PUMP DOWN by the same
+# amount. The empirical Z-offset observed in the screenshot (the elbow
+# mouth sitting ≈ 0.20 m above where my naive calculation put it) is
+# applied as a downward shift of the entire pump via `_PUMP_Z_TWEAK`.
+# After the shift, the elbow mouth lands where the diagrid boss already
+# sits, no boss-clipping check is triggered, and the `_PUMP_NOZZLE_Z_ABS`
+# formula stays the textbook `_PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL`
+# (consistent with the design intent in the rest of the code).
+
+# If after rendering the boss still sits above/below the elbow mouth,
+# tune `_PUMP_Z_TWEAK` by ±0.02 m and re-run.
+# """
+
+# import math
+# from assemble import assemble_objects
+# from ocp_vscode import show
+
+# _SB_Z_BOTTOM       = -1.702
+# _SB_TOP_Z          = _SB_Z_BOTTOM + 1.242
+# _DIAGRID_THICKNESS = 1.050
+# _DIAGRID_Z_BOTTOM  = _SB_TOP_Z
+# _DIAGRID_TOP_Z     = _DIAGRID_Z_BOTTOM + _DIAGRID_THICKNESS
+# _CORE_Z_BOTTOM     = _DIAGRID_TOP_Z
+
+# _RPV_INNER_D    = 8.91
+# _RPV_WALL_T     = 0.05
+# _RPV_STRAIGHT_H = 9.0
+# _TORI_Rc        = 5.245
+# _TORI_rk        = 0.379
+
+# RPV = {
+#     "operation":          "primitive",
+#     "obj_id":             "rpv",
+#     "obj_type":           "reactor_vessel",
+#     "inner_d":            _RPV_INNER_D,
+#     "wall_t":             _RPV_WALL_T,
+#     "straight_h":         _RPV_STRAIGHT_H,
+#     "bottom_head_type":   "torispherical",
+#     "bottom_head_params": {"Rc": _TORI_Rc, "rk": _TORI_rk},
+# }
+
+# _od            = _RPV_INNER_D + 2 * _RPV_WALL_T
+# _r             = _od / 2
+# _xk            = _r - _TORI_rk
+# _zc            = math.sqrt((_TORI_Rc - _TORI_rk)**2 - _xk**2)
+# _HEAD_BOTTOM_Z = _zc - _TORI_Rc
+
+# TOP_PLATE = {
+#     "operation": "primitive",
+#     "obj_id":    "top_plate",
+#     "obj_type":  "reactor_top_plate",
+#     "outer_d":   10.0,
+#     "thickness": 0.5,
+#     "z_bottom":  _RPV_STRAIGHT_H,
+#     "hole_groups": [
+#         {
+#             "hole_diameter": 2.224,
+#             "layout":        "explicit_positions",
+#             "positions":     [(0.0, 0.0)],
+#         },
+#         {
+#             "hole_diameter":    1.600,
+#             "layout":           "symmetric",
+#             "count":            3,
+#             "placement_radius": 2.730,
+#             "start_angle_deg":  0.0,
+#         },
+#         {
+#             "hole_diameter":    1.350,
+#             "layout":           "symmetric",
+#             "count":            3,
+#             "placement_radius": 3.369,
+#             "start_angle_deg":  60.0,
+#         },
+#     ],
+# }
+
+# _ihx_r = 2.730
+
+# def _make_ihx(obj_id: str, angle_deg: float, center_z: float = 7.0) -> dict:
+#     rad = math.radians(angle_deg)
+#     return {
+#         "operation":       "primitive",
+#         "obj_id":          obj_id,
+#         "obj_type":        "ihx",
+#         "center_coords":   (_ihx_r * math.cos(rad), _ihx_r * math.sin(rad), center_z),
+#         "rotation_angles": (0.0, 0.0, angle_deg),
+#         "lower_plenum_inner_radius":  0.760,
+#         "lower_plenum_wall":          0.025,
+#         "lower_plenum_height":        0.600,
+#         "lower_plenum_dome_radius":   0.785,
+#         "upper_plenum_inner_radius":  0.760,
+#         "upper_plenum_wall":          0.025,
+#         "upper_plenum_height":        0.600,
+#         "upper_plenum_dome_radius":   0.785,
+#         "bundle_height":              6.0,
+#         "tube_rings": [
+#             dict(n=8,  inner_radius=0.020, wall=0.003, pitch_radius=0.12),
+#             dict(n=16, inner_radius=0.018, wall=0.003, pitch_radius=0.25),
+#             dict(n=24, inner_radius=0.016, wall=0.003, pitch_radius=0.40),
+#             dict(n=32, inner_radius=0.014, wall=0.003, pitch_radius=0.55),
+#             dict(n=40, inner_radius=0.014, wall=0.003, pitch_radius=0.70),
+#         ],
+#         "central_pipe_inner_radius":  0.20,
+#         "central_pipe_wall":          0.025,
+#         "central_pipe_bend_radius":   0.25,
+#         "central_pipe_z_offset":      0.20,
+#         "central_pipe_horiz_len":     0.60,
+#         "riser_inner_radius":         0.20,
+#         "riser_wall":                 0.025,
+#         "riser_height":               0.60,
+#         "lateral_pipe_inner_radius":  0.10,
+#         "lateral_pipe_wall":          0.015,
+#         "lateral_pipe_length":        0.50,
+#         "lateral_pipe_z_offset":      0.30,
+#         "bundle_shell_inner_radius":  0.775,
+#         "bundle_shell_wall":          0.025,
+#         "bundle_shell_n_bars":        8,
+#         "bundle_shell_bar_width":     0.030,
+#         "bundle_shell_window_height": 2.50,
+#     }
+
+# IHX1 = _make_ihx("ihx_1",   0.0)
+# IHX2 = _make_ihx("ihx_2", 120.0)
+# IHX3 = _make_ihx("ihx_3", 240.0)
+
+# # ── Pump Z definition ──────────────────────────────────────────────────────────
+# _PUMP_BARREL_HEIGHT = 12.0
+# _PUMP_Z_BOTTOM      = _HEAD_BOTTOM_Z + 2.562
+# _PUMP_CENTER_Z_RAW  = _PUMP_Z_BOTTOM + _PUMP_BARREL_HEIGHT / 2
+
+# # Empirical Z-tweak: assemble_objects' placement of the pump puts the
+# # elbow mouth ≈ 0.20 m BELOW where the textbook formula
+# # (_PUMP_Z_BOTTOM + nozzle_z) predicts. We compensate by sliding the
+# # whole pump UPWARD by the same amount. After this shift the elbow
+# # mouth lands at _PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL in the world
+# # frame, which is what the diagrid expects.
+# _PUMP_Z_TWEAK   = +0.200   # raise the pump so its elbow mouth meets the diagrid boss
+# _PUMP_CENTER_Z  = _PUMP_CENTER_Z_RAW + _PUMP_Z_TWEAK
+
+# _pump_r              = 3.369
+# _PUMP_NOZZLE_Z_LOCAL = 0.350   # elbow centerline Z in the pump's local frame
+
+# def _make_pump(obj_id: str, angle_deg: float) -> dict:
+#     rad = math.radians(angle_deg)
+#     return {
+#         "operation":       "primitive",
+#         "obj_id":          obj_id,
+#         "obj_type":        "primary_pump",
+#         "rotation_angles": (0.0, 0.0, angle_deg - 90.0),
+#         "center_coords":   (_pump_r * math.cos(rad), _pump_r * math.sin(rad), _PUMP_CENTER_Z),
+#         "barrel_radius":   1.350 / 2,
+#         "barrel_wall_t":   0.040,
+#         "barrel_height":   _PUMP_BARREL_HEIGHT,
+#         "nozzle_r_pipe":   0.460 / 2,
+#         "nozzle_wall_t":   0.025,
+#         "nozzle_L_leg":    0.600,
+#         "nozzle_R_bend":   0.460,
+#         "nozzle_arc_deg":  105.0,
+#         "nozzle_L_inlet":  0.050,
+#         "nozzle_z":        _PUMP_NOZZLE_Z_LOCAL,
+#         "flange_width":    0.548,
+#         "flange_height":   0.900,
+#         "flange_depth":    0.500,
+#     }
+
+# PUMP1 = _make_pump("pump_1",  60.0)
+# PUMP2 = _make_pump("pump_2", 180.0)
+# PUMP3 = _make_pump("pump_3", 300.0)
+
+# # ── Diagrid nozzle boss angles ────────────────────────────────────────────────
+# def _nozzle_boss_angles() -> list[float]:
+#     arc_rad   = math.radians(105.0)
+#     L_leg     = 0.600;  L_inlet = 0.050;  R_bend = 0.460
+#     barrel_r  = 1.350 / 2
+#     overshoot = 0.040 * 1.5
+#     ex  = R_bend * (1.0 - math.cos(arc_rad)) + L_leg * math.sin(arc_rad)
+#     ey  = L_inlet + R_bend * math.sin(arc_rad) + L_leg * math.cos(arc_rad)
+#     lx  = ey + (barrel_r - overshoot)
+#     ly  = -ex
+#     phi = math.degrees(math.atan2(lx, _pump_r + ly))  # ≈ 23.4°
+#     angles = []
+#     for a in [60.0, 180.0, 300.0]:
+#         angles.append(a - phi)   # right nozzle
+#         angles.append(a + phi)   # left  nozzle
+#     return angles
+
+# _NOZZLE_BOSS_ANGLES = _nozzle_boss_angles()
+
+# # ── Diagrid boss Z: textbook formula, no offset needed here ──────────────────
+# # Because we shifted the pump down by _PUMP_Z_TWEAK, the elbow mouth now
+# # actually lands at this textbook value in world coordinates.
+# _PUMP_NOZZLE_Z_ABS = _PUMP_Z_BOTTOM + _PUMP_NOZZLE_Z_LOCAL   # ≈ +0.247 m
+# # Range check: diagrid spans Z = [-0.460, +0.590], boss radius 0.301
+# # → valid range (-0.159, +0.289). 0.247 fits.
+
+# DIAGRID = {
+#     "operation":              "primitive",
+#     "obj_id":                 "diagrid",
+#     "obj_type":               "diagrid",
+#     "diameter":               4.660,
+#     "thickness":              _DIAGRID_THICKNESS,
+#     "z_bottom":               _DIAGRID_Z_BOTTOM,
+#     "nozzle_boss_angles_deg": _NOZZLE_BOSS_ANGLES,
+#     "nozzle_z_abs":           _PUMP_NOZZLE_Z_ABS,
+#     "nozzle_r_bore":          0.230,
+#     "nozzle_depth":           0.300,
+#     "nozzle_r_boss":          0.301,
+#     "nozzle_boss_height":     0.0775,   # protrusion past outer wall
+# }
+
+# CORE = {
+#     "operation": "primitive",
+#     "obj_id":    "core",
+#     "obj_type":  "reactor_core",
+#     "radius":    3.600 / 2,
+#     "height":    3.910,
+#     "z_bottom":  _CORE_Z_BOTTOM,
+# }
+
+# STRONGBACK = {
+#     "operation":              "primitive",
+#     "obj_id":                 "strongback",
+#     "obj_type":               "strongback",
+#     "total_height":           1.242,
+#     "flange_radius":          2.684,
+#     "skirt_outer_radius":     3.030,
+#     "skirt_inner_radius":     2.243,
+#     "skirt_height":           0.436,
+#     "taper_bottom_z":         0.356,
+#     "bore_radius":            0.303,
+#     "small_hole_radius":      0.0755,
+#     "small_hole_count":       6,
+#     "small_hole_placement_r": 0.900,
+#     "z_bottom":               _SB_Z_BOTTOM,
+# }
+
+# show(assemble_objects([
+#     RPV,
+#     TOP_PLATE,
+#     IHX1, IHX2, IHX3,
+#     PUMP1, PUMP2, PUMP3,
+#     DIAGRID,
+#     CORE,
+#     STRONGBACK,
+# ]))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# import math
+# from assemble import assemble_objects
+# from ocp_vscode import show
+
+# _SB_Z_BOTTOM       = -1.702
+# _SB_TOP_Z          = _SB_Z_BOTTOM + 1.242
+# _DIAGRID_THICKNESS = 1.050
+# _DIAGRID_Z_BOTTOM  = _SB_TOP_Z
+# _DIAGRID_TOP_Z     = _DIAGRID_Z_BOTTOM + _DIAGRID_THICKNESS
+# _CORE_Z_BOTTOM     = _DIAGRID_TOP_Z
+
+# _RPV_INNER_D    = 8.91
+# _RPV_WALL_T     = 0.05
+# _RPV_STRAIGHT_H = 9.0
+# _TORI_Rc        = 5.245
+# _TORI_rk        = 0.379
+
+# RPV = {
+#     "operation":          "primitive",
+#     "obj_id":             "rpv",
+#     "obj_type":           "reactor_vessel",
+#     "inner_d":            _RPV_INNER_D,
+#     "wall_t":             _RPV_WALL_T,
+#     "straight_h":         _RPV_STRAIGHT_H,
+#     "bottom_head_type":   "torispherical",
+#     "bottom_head_params": {"Rc": _TORI_Rc, "rk": _TORI_rk},
+# }
+
+# _od            = _RPV_INNER_D + 2 * _RPV_WALL_T
+# _r             = _od / 2
+# _xk            = _r - _TORI_rk
+# _zc            = math.sqrt((_TORI_Rc - _TORI_rk)**2 - _xk**2)
+# _HEAD_BOTTOM_Z = _zc - _TORI_Rc
+
+# TOP_PLATE = {
+#     "operation": "primitive",
+#     "obj_id":    "top_plate",
+#     "obj_type":  "reactor_top_plate",
+#     "outer_d":   10.0,
+#     "thickness": 0.5,
+#     "z_bottom":  _RPV_STRAIGHT_H,
+#     "hole_groups": [
+#         {
+#             "hole_diameter": 2.224,
+#             "layout":        "explicit_positions",
+#             "positions":     [(0.0, 0.0)],
+#         },
+#         {
+#             "hole_diameter":    1.600,
+#             "layout":           "symmetric",
+#             "count":            3,
+#             "placement_radius": 2.730,
+#             "start_angle_deg":  0.0,
+#         },
+#         {
+#             "hole_diameter":    1.350,
+#             "layout":           "symmetric",
+#             "count":            3,
+#             "placement_radius": 3.369,
+#             "start_angle_deg":  60.0,
+#         },
+#     ],
+# }
+
+# _ihx_r = 2.730
+
+# def _make_ihx(obj_id: str, angle_deg: float, center_z: float = 7.0) -> dict:
+#     rad = math.radians(angle_deg)
+#     return {
+#         "operation":       "primitive",
+#         "obj_id":          obj_id,
+#         "obj_type":        "ihx",
+#         "center_coords":   (_ihx_r * math.cos(rad), _ihx_r * math.sin(rad), center_z),
+#         "rotation_angles": (0.0, 0.0, angle_deg),
+#         "lower_plenum_inner_radius":  0.760,
+#         "lower_plenum_wall":          0.025,
+#         "lower_plenum_height":        0.600,
+#         "lower_plenum_dome_radius":   0.785,
+#         "upper_plenum_inner_radius":  0.760,
+#         "upper_plenum_wall":          0.025,
+#         "upper_plenum_height":        0.600,
+#         "upper_plenum_dome_radius":   0.785,
+#         "bundle_height":              6.0,
+#         "tube_rings": [
+#             dict(n=8,  inner_radius=0.020, wall=0.003, pitch_radius=0.12),
+#             dict(n=16, inner_radius=0.018, wall=0.003, pitch_radius=0.25),
+#             dict(n=24, inner_radius=0.016, wall=0.003, pitch_radius=0.40),
+#             dict(n=32, inner_radius=0.014, wall=0.003, pitch_radius=0.55),
+#             dict(n=40, inner_radius=0.014, wall=0.003, pitch_radius=0.70),
+#         ],
+#         "central_pipe_inner_radius":  0.20,
+#         "central_pipe_wall":          0.025,
+#         "central_pipe_bend_radius":   0.25,
+#         "central_pipe_z_offset":      0.20,
+#         "central_pipe_horiz_len":     0.60,
+#         "riser_inner_radius":         0.20,
+#         "riser_wall":                 0.025,
+#         "riser_height":               0.60,
+#         "lateral_pipe_inner_radius":  0.10,
+#         "lateral_pipe_wall":          0.015,
+#         "lateral_pipe_length":        0.50,
+#         "lateral_pipe_z_offset":      0.30,
+#         "bundle_shell_inner_radius":  0.775,
+#         "bundle_shell_wall":          0.025,
+#         "bundle_shell_n_bars":        8,
+#         "bundle_shell_bar_width":     0.030,
+#         "bundle_shell_window_height": 2.50,
+#     }
+
+# IHX1 = _make_ihx("ihx_1",   0.0)
+# IHX2 = _make_ihx("ihx_2", 120.0)
+# IHX3 = _make_ihx("ihx_3", 240.0)
+
+# _PUMP_BARREL_HEIGHT = 12.0
+# _PUMP_Z_BOTTOM      = _HEAD_BOTTOM_Z + 2.562
+# _PUMP_CENTER_Z      = _PUMP_Z_BOTTOM + _PUMP_BARREL_HEIGHT / 2
+# _pump_r             = 3.369
+
+# def _make_pump(obj_id: str, angle_deg: float) -> dict:
+#     rad = math.radians(angle_deg)
+#     return {
+#         "operation":       "primitive",
+#         "obj_id":          obj_id,
+#         "obj_type":        "primary_pump",
+#         "rotation_angles": (0.0, 0.0, angle_deg - 90.0),
+#         "center_coords":   (_pump_r * math.cos(rad), _pump_r * math.sin(rad), _PUMP_CENTER_Z),
+#         "barrel_radius":   1.350 / 2,
+#         "barrel_wall_t":   0.040,
+#         "barrel_height":   _PUMP_BARREL_HEIGHT,
+#         "nozzle_r_pipe":   0.460 / 2,
+#         "nozzle_wall_t":   0.025,
+#         "nozzle_L_leg":    0.600,
+#         "nozzle_R_bend":   0.460,
+#         "nozzle_arc_deg":  105.0,
+#         "nozzle_L_inlet":  0.050,
+#         "nozzle_z":        0.350,
+#         "flange_width":    0.548,
+#         "flange_height":   0.900,
+#         "flange_depth":    0.500,
+#     }
+
+# PUMP1 = _make_pump("pump_1",  60.0)
+# PUMP2 = _make_pump("pump_2", 180.0)
+# PUMP3 = _make_pump("pump_3", 300.0)
+
+# # ── Diagrid nozzle boss angles ────────────────────────────────────────────────
+# def _nozzle_boss_angles() -> list[float]:
+#     arc_rad   = math.radians(105.0)
+#     L_leg     = 0.600;  L_inlet = 0.050;  R_bend = 0.460
+#     barrel_r  = 1.350 / 2
+#     overshoot = 0.040 * 1.5
+#     ex  = R_bend * (1.0 - math.cos(arc_rad)) + L_leg * math.sin(arc_rad)
+#     ey  = L_inlet + R_bend * math.sin(arc_rad) + L_leg * math.cos(arc_rad)
+#     lx  = ey + (barrel_r - overshoot)
+#     ly  = -ex
+#     phi = math.degrees(math.atan2(lx, _pump_r + ly))  # ≈ 23.4°
+#     angles = []
+#     for a in [60.0, 180.0, 300.0]:
+#         angles.append(a - phi)   # right nozzle
+#         angles.append(a + phi)   # left  nozzle
+#     return angles
+
+# _NOZZLE_BOSS_ANGLES = _nozzle_boss_angles()
+# _PUMP_NOZZLE_Z_ABS  = _PUMP_Z_BOTTOM + 0.350   # ≈ +0.247 m
+
+# DIAGRID = {
+#     "operation":              "primitive",
+#     "obj_id":                 "diagrid",
+#     "obj_type":               "diagrid",
+#     "diameter":               4.660,
+#     "thickness":              _DIAGRID_THICKNESS,
+#     "z_bottom":               _DIAGRID_Z_BOTTOM,
+#     "nozzle_boss_angles_deg": _NOZZLE_BOSS_ANGLES,
+#     "nozzle_z_abs":           _PUMP_NOZZLE_Z_ABS,
+#     "nozzle_r_bore":          0.230,
+#     "nozzle_depth":           0.300,
+#     "nozzle_r_boss":          0.301,
+#     "nozzle_boss_height":     0.080,
+# }
+
+# CORE = {
+#     "operation": "primitive",
+#     "obj_id":    "core",
+#     "obj_type":  "reactor_core",
+#     "radius":    3.600 / 2,
+#     "height":    3.910,
+#     "z_bottom":  _CORE_Z_BOTTOM,
+# }
+
+# STRONGBACK = {
+#     "operation":              "primitive",
+#     "obj_id":                 "strongback",
+#     "obj_type":               "strongback",
+#     "total_height":           1.242,
+#     "flange_radius":          2.684,
+#     "skirt_outer_radius":     3.030,
+#     "skirt_inner_radius":     2.243,
+#     "skirt_height":           0.436,
+#     "taper_bottom_z":         0.356,
+#     "bore_radius":            0.303,
+#     "small_hole_radius":      0.0755,
+#     "small_hole_count":       6,
+#     "small_hole_placement_r": 0.900,
+#     "z_bottom":               _SB_Z_BOTTOM,
+# }
+
+# show(assemble_objects([
+#     RPV,
+#     TOP_PLATE,
+#     IHX1, IHX2, IHX3,
+#     PUMP1, PUMP2, PUMP3,
+#     DIAGRID,
+#     CORE,
+#     STRONGBACK,
+# ]))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -13,7 +13,8 @@ AxisName = Literal["X", "Y", "Z"]
 def export_step(shape, path: str):
     """Export a CadQuery solid or assembly to STEP."""
     if isinstance(shape, cq.Assembly):
-        cq.exporters.export(shape.toCompound(), path, exportType="STEP")
+        # cq.exporters.export(shape.toCompound(), path, exportType="STEP")
+        shape.save(path, exportType="STEP")          # ← preserves names
     else:
         cq.exporters.export(shape, path, exportType="STEP")
 

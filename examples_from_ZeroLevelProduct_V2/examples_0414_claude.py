@@ -45,7 +45,9 @@ TOP_PLATE = {
     ],
 }
 
-show(assemble_objects([RPV, TOP_PLATE]))
+show(assemble_objects([RPV, TOP_PLATE], export_path="output/example_0515_from_examples_0414_claude_with_validation_and_components_names.step"))
+
+
 
 
 
