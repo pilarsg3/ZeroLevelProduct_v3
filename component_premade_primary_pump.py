@@ -122,7 +122,7 @@ def create_primary_pump(
     if flange_z_top is None:
         flange_z_top = barrel_height - 0.5
 
-    overshoot       = barrel_wall_t * 1.5
+    overshoot       = barrel_wall_t  # * 1.5
     inner_overshoot = nozzle_wall_t * 2
 
     # Barrel
@@ -164,8 +164,8 @@ def create_primary_pump(
 
     solid = envelope.cut(barrel_bore).cut(j_right_in).cut(j_left_in)
 
-    if z_bottom != 0.0:
-        solid = solid.translate((0, 0, z_bottom))
+    #if z_bottom != 0.0:
+    #    solid = solid.translate((0, 0, z_bottom))
 
     return solid.clean()
 

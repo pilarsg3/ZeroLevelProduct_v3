@@ -24,6 +24,8 @@ from utils import extrude_profile, revolve_profile, sweep_profile, rotate_rpy_ab
 from components_premade import build_premade_component, PREMADE_BUILDERS
 
 
+
+
 # =====================================================================
 # Internal helpers for hollow profile generation
 # =====================================================================
@@ -284,6 +286,37 @@ def _apply_hollow(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def build_solid(
     operation: Literal["extrude", "revolve", "sweep", "primitive"],
     profile: Union[Dict[str, Any], Sequence[Tuple[float, float]]],
@@ -355,6 +388,7 @@ def build_solid(
             raise ValueError("For 'primitive', profile must be a dict or list of dicts")
     else:
         raise ValueError(f"Unknown operation: {operation}. Use 'extrude', 'revolve', 'sweep', or 'primitive'")
+
 
     # Convert polar coordinates to Cartesian if provided
     if center_coords_pol is not None:
